@@ -16,10 +16,8 @@ from bidi.algorithm import get_display
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
-# جلب المفتاح السري من إعدادات Render بشكل آمن
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
-# تحميل الخط العربي برابط موثوق من مستودع جوجل الرسمي لتجنب خطأ 404
 FONT_PATH = "Amiri-Regular.ttf"
 if not os.path.exists(FONT_PATH):
     try:
@@ -56,7 +54,6 @@ async def translate_blocks(blocks_text: list) -> list:
         )
         raw_res = response.choices[0].message.content.strip()
         
-        # تنظيف استجابة الذكاء الاصطناعي من أي نصوص زائدة
         if raw_res.startswith("```json"): raw_res = raw_res[7:]
         if raw_res.startswith("```"): raw_res = raw_res[3:]
         if raw_res.endswith("```"): raw_res = raw_res[:-3]
@@ -74,7 +71,6 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
         page = doc[page_idx]
         blocks = page.get_text("blocks")
         
-        # تضمين الخط العربي إذا تم تحميله بنجاح
         if os.path.exists(FONT_PATH):
             page.insert_font(fontname="amiri", fontfile=FONT_PATH)
             font_to_use = "amiri"
@@ -86,7 +82,6 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                # تجاهل الأرقام والنصوص القصيرة جداً
                 if len(txt) > 3 and not txt.isdigit():
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
@@ -114,7 +109,6 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
                 except Exception:
                     bidi_text = ar_text
 
-                # ضبط إحداثيات الكتابة أسفل السطر الأصلي
                 x0, y0, x1, y1 = coord
                 insert_point = fitz.Point(x0, min(y1 + 10, page.rect.height - 10))
 
@@ -146,4 +140,53 @@ async def handle_start(message: types.Message):
 @dp.message(F.document)
 async def handle_pdf(message: types.Message):
     doc_info = message.document
-    if not doc_info.
+    if not doc_info.file_name.lower().endswith(".pdf"):
+        await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
+        return
+
+    status_msg = await message.answer("📥 جاري الترجمة وتضمين الخطوط العربية في الملف...")
+
+    try:
+        pdf_io = io.BytesIO()
+        await bot.download(doc_info, destination=pdf_io)
+        pdf_bytes = pdf_io.getvalue()
+
+        loop = asyncio.get_running_loop()
+        processed_pdf_io = await loop.run_in_executor(
+            None,
+            lambda: process_pdf_interlinear(pdf_bytes, max_pages=5)
+        )
+
+        out_name = f"مترجم_{doc_info.file_name}"
+        to_send = BufferedInputFile(processed_pdf_io.getvalue(), filename=out_name)
+
+        await status_msg.delete()
+        await message.answer_document(
+            document=to_send,
+            caption="✅ تمت الترجمة بنجاح وبدون أي أخطاء!"
+        )
+
+    except Exception as e:
+        logging.error(f"خطأ أثناء المعالجة: {e}")
+        await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
+
+async def handle_ping(request):
+    return web.Response(text="Bot is running alive!")
+
+async def start_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/healthz", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+async def main():
+    await start_web_server()
+    logging.info("🚀 البوت يعمل الآن...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
