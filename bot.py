@@ -7,7 +7,8 @@ import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
 from openai import AsyncOpenAI
 import fitz  # PyMuPDF
 import arabic_reshaper
@@ -35,11 +36,51 @@ client = AsyncOpenAI(
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
+# --- واجهة الأزرار الشفافة ---
+def get_main_menu():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📄 كيفية الترجمة؟", callback_data="how_to")],
+            [
+                InlineKeyboardButton(text="ℹ️ حول البوت", callback_data="about"),
+                InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="settings")
+            ]
+        ]
+    )
+
+@dp.message(CommandStart())
+async def handle_start(message: types.Message):
+    welcome_text = (
+        "👋 مرحباً بك في **المترجم الأكاديمي الاحترافي**!\n\n"
+        "أنا هنا لمساعدتك في ترجمة المحاضرات الهندسية والعلمية (PDF) ووضع الترجمة العربية بشكل أنيق تحت الأسطر الإنجليزية.\n\n"
+        "👇 اختر من القائمة أدناه أو أرسل ملف PDF للبدء فوراً:"
+    )
+    await message.answer(welcome_text, reply_markup=get_main_menu())
+
+@dp.callback_query(F.data == "how_to")
+async def cb_how_to(callback: types.CallbackQuery):
+    text = "📄 **كيفية الترجمة:**\n\nفقط قم بإرسال أي ملف PDF للمحاضرة في هذه الدردشة. سأقوم بتحليله، ترجمة النصوص بدقة، وإرسال نسخة PDF جديدة لك تحتوي على الترجمة العربية باللون الأحمر أسفل كل سطر."
+    await callback.message.edit_text(text, reply_markup=get_main_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "about")
+async def cb_about(callback: types.CallbackQuery):
+    text = "ℹ️ **حول البوت:**\n\nتم تطوير هذا البوت لطلاب الجامعات والمهندسين. يعتمد على الذكاء الاصطناعي لترجمة المصطلحات الأكاديمية ووضعها بشكل متناسق داخل ملف الـ PDF الأصلي دون تخريب تصميمه."
+    await callback.message.edit_text(text, reply_markup=get_main_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "settings")
+async def cb_settings(callback: types.CallbackQuery):
+    text = "⚙️ **الإعدادات:**\n\n🔹 **حجم الخط العربي:** 7.5 (متوسط ومناسب)\n🔹 **لون الترجمة:** أحمر غامق\n🔹 **الوضع:** ذكي (يتجاوز الأرقام للسرعة)\n\n*(التعديل اليدوي للإعدادات سيتاح قريباً)*"
+    await callback.message.edit_text(text, reply_markup=get_main_menu())
+    await callback.answer()
+
+# --- دوال الترجمة ومعالجة الـ PDF ---
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text:
         return []
     
-    prompt = "ترجم النصوص التالية إلى اللغة العربية. أعد كتابة الترجمة بنفس الترقيم بالضبط (رقم|| النص المترجم). لا تكتب أي مقدمات أو شروحات إضافية.\n\n"
+    prompt = "ترجم النصوص التالية إلى اللغة العربية بدقة أكاديمية. أعد كتابة الترجمة بنفس الترقيم بالضبط (رقم|| النص المترجم). لا تكتب أي مقدمات أو شروحات إضافية.\n\n"
     for i, text in enumerate(blocks_text):
         prompt += f"{i}|| {text}\n"
 
@@ -71,8 +112,8 @@ async def translate_blocks(blocks_text: list) -> list:
         logging.error(f"Translation Error: {e}")
         return ["" for _ in blocks_text]
 
-def split_text_to_fit(text, max_length=90):
-    """تقسيم النص العربي الطويل إلى أسطر متعددة لتجنب الخروج عن الصفحة"""
+def split_text_to_fit(text, max_length=95):
+    """تقسيم النص لأسطر لتجنب التضارب والخروج عن الصفحة"""
     words = text.split()
     lines = []
     current_line = ""
@@ -106,8 +147,8 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                # الفلترة الذكية للكلمات الإنجليزية الطويلة (أكثر من 15 حرفاً لتجنب العناوين القصيرة جداً)
-                if len(txt) > 15 and re.search('[a-zA-Z]', txt):
+                # فلترة معدلة: تقبل الكلمات التي طولها 5 أحرف فأكثر (لالتقاط العناوين القصيرة) وتحتوي على حروف
+                if len(txt) > 5 and re.search('[a-zA-Z]{3,}', txt):
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
 
@@ -125,11 +166,10 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                 continue
 
             try:
-                # تقسيم النص إلى أسطر متعددة قبل إعادة تشكيله
                 wrapped_lines = split_text_to_fit(ar_text)
-                
                 x0, y0, x1, y1 = coord
-                y_offset = y1 + 10 # مسافة أوسع أسفل السطر الإنجليزي
+                # تقليل مسافة النزول لتصبح 8 فقط لمنع التضارب مع السطر التالي
+                y_offset = y1 + 8 
                 
                 for line in wrapped_lines:
                     reshaped = arabic_reshaper.reshape(line)
@@ -142,15 +182,15 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                             insert_point,
                             bidi_text,
                             fontname=font_to_use,
-                            fontsize=8.5, # خط أكبر وأوضح
+                            fontsize=7.5, # خط أصغر ومتناسق
                             color=(0.7, 0.1, 0.1),
                             rotate=0
                         )
                     except Exception as e:
                         logging.error(f"Error inserting text: {e}")
                     
-                    # النزول للسطر التالي إذا كان النص مقسماً
-                    y_offset += 12 
+                    # مسافة الأسطر الملتفة أصغر
+                    y_offset += 10 
 
             except Exception as e:
                  logging.error(f"Error processing arabic text: {e}")
@@ -163,13 +203,6 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
     output.seek(0)
     return output
 
-@dp.message(CommandStart())
-async def handle_start(message: types.Message):
-    await message.answer(
-        "👋 مرحباً بك في **المترجم الأكاديمي السريع**!\n\n"
-        "أرسل ملف المحاضرة (PDF) وسأترجمه بسرعة وتنسيق مقروء 📄✨."
-    )
-
 @dp.message(F.document)
 async def handle_pdf(message: types.Message):
     doc_info = message.document
@@ -177,7 +210,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري الترجمة وتنسيق النصوص للطباعة المريحة...")
+    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر، يرجى الانتظار ⏳")
 
     try:
         pdf_io = io.BytesIO()
@@ -192,13 +225,18 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تمت الترجمة وتعديل التنسيق بنجاح!"
+            caption="✅ تمت الترجمة والتنسيق بنجاح! احتفظ بهذا الملف.",
+            reply_markup=get_main_menu()
         )
 
     except Exception as e:
         logging.error(f"خطأ أثناء المعالجة: {e}")
-        await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
+        try:
+            await status_msg.edit_text(f"❌ حدث خطأ أثناء المعالجة: {e}")
+        except TelegramBadRequest:
+            await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
 
+# --- السيرفر الوهمي لمنصة Render ---
 async def handle_ping(request):
     return web.Response(text="Bot is running alive!")
 
@@ -214,7 +252,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بالنسخة المنسقة...")
+    logging.info("🚀 البوت يعمل الآن بكامل الميزات...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
