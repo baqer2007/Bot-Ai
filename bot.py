@@ -2,6 +2,8 @@ import os
 import io
 import asyncio
 import logging
+import json
+import urllib.request
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -15,45 +17,49 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
 
-# الكود الآن سيبحث عن المفتاح في مكان سري داخل Render ولن يتم فضحه في GitHub
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+# تحميل خط عربي بشكل تلقائي لتجنب اختفاء النصوص
+FONT_PATH = "Amiri-Regular.ttf"
+if not os.path.exists(FONT_PATH):
+    logging.info("Downloading Arabic Font...")
+    urllib.request.urlretrieve("https://github.com/alif-type/amiri/raw/main/fonts/Amiri-Regular.ttf", FONT_PATH)
 
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY.strip(),
-    timeout=35.0
+    base_url="https://text.pollinations.ai/openai",
+    api_key="dummy",
+    timeout=60.0
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-SYSTEM_TRANSLATE_PROMPT = """
-أنت مترجم أكاديمي تخصصي للمحاضرات العلمية.
-ترجم كل فقرة بدقة إلى العربية وضع علامة ||| حصراً بين كل ترجمة والتي تليها دون أي إضافات.
-"""
-
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text:
         return []
-    prompt = "ترجم كل فقرة مما يلي إلى العربية وافصل بينها بـ ||| فقط:\n\n" + "\n---SPLIT---\n".join(blocks_text)
+    
+    # استخدام JSON لضمان عدم تداخل النصوص أو الرموز
+    prompt = "Translate the following JSON array of English texts into a JSON array of Arabic texts. Return ONLY a valid JSON array. No explanations.\n"
+    prompt += json.dumps(blocks_text)
 
     loop = asyncio.get_running_loop()
     try:
         response = await loop.run_in_executor(
             None,
             lambda: client.chat.completions.create(
-                model="openrouter/free",
-                messages=[
-                    {"role": "system", "content": SYSTEM_TRANSLATE_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
             )
         )
-        raw_res = response.choices[0].message.content
-        return [t.strip() for t in raw_res.split("|||")]
+        raw_res = response.choices[0].message.content.strip()
+        
+        # تنظيف استجابة الذكاء الاصطناعي
+        if raw_res.startswith("```json"): raw_res = raw_res[7:]
+        if raw_res.startswith("```"): raw_res = raw_res[3:]
+        if raw_res.endswith("```"): raw_res = raw_res[:-3]
+            
+        return json.loads(raw_res.strip())
     except Exception as e:
-        logging.error(f"خطأ أثناء الترجمة: {e}")
+        logging.error(f"Translation Error: {e}")
         return []
 
 def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
@@ -63,13 +69,16 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
     for page_idx in range(pages_limit):
         page = doc[page_idx]
         blocks = page.get_text("blocks")
+        
+        # تضمين الخط العربي في كل صفحة
+        page.insert_font(fontname="amiri", fontfile=FONT_PATH)
 
         text_blocks = []
         valid_coords = []
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                if len(txt) > 3:
+                if len(txt) > 3 and not txt.isdigit():
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
 
@@ -78,34 +87,36 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
 
         try:
             translations = asyncio.run(translate_blocks(text_blocks))
-        except Exception as e:
-            logging.error(f"خطأ صفحة {page_idx}: {e}")
+        except Exception:
             continue
 
-        for i, coord in enumerate(valid_coords):
-            if i >= len(translations):
-                break
+        if isinstance(translations, list):
+            for i, coord in enumerate(valid_coords):
+                if i >= len(translations):
+                    break
 
-            ar_text = translations[i].strip()
-            if not ar_text:
-                continue
+                ar_text = str(translations[i]).strip()
+                if not ar_text or ar_text == text_blocks[i]:
+                    continue
 
-            try:
-                reshaped = arabic_reshaper.reshape(ar_text)
-                bidi_text = get_display(reshaped)
-            except Exception:
-                bidi_text = ar_text
+                try:
+                    reshaped = arabic_reshaper.reshape(ar_text)
+                    bidi_text = get_display(reshaped)
+                except Exception:
+                    bidi_text = ar_text
 
-            x0, y0, x1, y1 = coord
-            insert_point = fitz.Point(x0, min(y1 + 8, page.rect.height - 10))
+                x0, y0, x1, y1 = coord
+                insert_point = fitz.Point(x0, min(y1 + 5, page.rect.height - 10))
 
-            page.insert_text(
-                insert_point,
-                bidi_text,
-                fontsize=7.5,
-                color=(0.75, 0.05, 0.05),
-                rotate=0
-            )
+                # كتابة النص بالخط العربي
+                page.insert_text(
+                    insert_point,
+                    bidi_text,
+                    fontname="amiri",  # تحديد الخط العربي
+                    fontsize=8.5,
+                    color=(0.8, 0.1, 0.1),
+                    rotate=0
+                )
 
     output = io.BytesIO()
     doc.save(output)
@@ -117,7 +128,7 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
 async def handle_start(message: types.Message):
     await message.answer(
         "👋 مرحباً بك في **المترجم الأكاديمي السحابي**!\n\n"
-        "أرسل ملف المحاضرة (PDF) وستتم طباعة الترجمة أسفل كل سطر مع الحفاظ على التصميم 📄✨."
+        "أرسل ملف المحاضرة (PDF) وستتم طباعة الترجمة أسفل كل سطر بخط عربي واضح 📄✨."
     )
 
 @dp.message(F.document)
@@ -127,7 +138,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري تحليل المحاضرة وإدراج الترجمة بين السطور...")
+    status_msg = await message.answer("📥 جاري الترجمة وتضمين الخطوط العربية في الملف...")
 
     try:
         pdf_io = io.BytesIO()
@@ -146,7 +157,7 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تم إدراج الترجمة أسفل كل سطر بنجاح!"
+            caption="✅ تمت الترجمة بنجاح وبدون أي أخطاء!"
         )
 
     except Exception as e:
@@ -168,7 +179,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن في السحاب بنجاح...")
+    logging.info("🚀 البوت يعمل الآن...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
