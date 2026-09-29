@@ -7,7 +7,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import BufferedInputFile
-from openai import AsyncOpenAI  # استخدام النسخة غير المتزامنة لتجنب الحظر
+from openai import AsyncOpenAI
 import fitz
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -25,7 +25,6 @@ if not os.path.exists(FONT_PATH):
     except Exception as e:
         logging.error(f"Font download error: {e}")
 
-# استخدام AsyncOpenAI لضمان استقرار الاتصال
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY.strip(),
@@ -49,9 +48,15 @@ async def translate_blocks(blocks_text: list) -> list:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
-        raw_res = response.choices[0].message.content.strip()
         
+        # حماية الكود من خطأ NoneType
+        content = response.choices[0].message.content
+        if not content:
+            return ["" for _ in blocks_text]
+            
+        raw_res = content.strip()
         translated_results = ["" for _ in range(len(blocks_text))]
+        
         for line in raw_res.split('\n'):
             if '||' in line:
                 parts = line.split('||', 1)
@@ -74,7 +79,6 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
     else:
         font_to_use = "helv"
 
-    # معالجة جميع صفحات الملف بدون استثناء
     for page_idx in range(len(doc)):
         page = doc[page_idx]
         if font_to_use == "amiri":
@@ -111,7 +115,6 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                 bidi_text = ar_text
 
             x0, y0, x1, y1 = coord
-            # تقليص مسافة النزول لتجنب التداخل مع السطر التالي
             insert_point = fitz.Point(x0, min(y1 + 3, page.rect.height - 5))
 
             try:
@@ -119,14 +122,13 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                     insert_point,
                     bidi_text,
                     fontname=font_to_use,
-                    fontsize=6.5,  # تصغير الخط ليتناسب مع المساحة الفارغة
+                    fontsize=6.5,
                     color=(0.7, 0.1, 0.1),
                     rotate=0
                 )
             except Exception as e:
                 logging.error(f"Error inserting text: {e}")
 
-        # استراحة لمدة ثانيتين بين كل صفحة لتجنب الحظر من النموذج المجاني
         await asyncio.sleep(2.0)
 
     output = io.BytesIO()
@@ -149,7 +151,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري الترجمة الدقيقة لجميع الصفحات (قد يستغرق بعض الوقت لتجنب التداخل)...")
+    status_msg = await message.answer("📥 جاري الترجمة... يرجى الانتظار، معالجة الملفات الطويلة تستغرق بضع دقائق.")
 
     try:
         pdf_io = io.BytesIO()
