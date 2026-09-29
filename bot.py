@@ -44,7 +44,6 @@ async def translate_blocks(blocks_text: list) -> list:
         prompt += f"{i}|| {text}\n"
 
     try:
-        # العودة للموجه التلقائي المستقر (لن يعطي 404 أبداً)
         response = await client.chat.completions.create(
             model="openrouter/free",
             messages=[{"role": "user", "content": prompt}],
@@ -72,6 +71,21 @@ async def translate_blocks(blocks_text: list) -> list:
         logging.error(f"Translation Error: {e}")
         return ["" for _ in blocks_text]
 
+def split_text_to_fit(text, max_length=90):
+    """تقسيم النص العربي الطويل إلى أسطر متعددة لتجنب الخروج عن الصفحة"""
+    words = text.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        if len(current_line) + len(word) + 1 <= max_length:
+            current_line += (word + " ")
+        else:
+            lines.append(current_line.strip())
+            current_line = word + " "
+    if current_line:
+        lines.append(current_line.strip())
+    return lines
+
 async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
@@ -92,8 +106,8 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                # الفلترة الذكية: أخذ النصوص التي تحتوي حروف إنجليزية فقط
-                if len(txt) > 2 and re.search('[a-zA-Z]', txt):
+                # الفلترة الذكية للكلمات الإنجليزية الطويلة (أكثر من 15 حرفاً لتجنب العناوين القصيرة جداً)
+                if len(txt) > 15 and re.search('[a-zA-Z]', txt):
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
 
@@ -111,25 +125,35 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                 continue
 
             try:
-                reshaped = arabic_reshaper.reshape(ar_text)
-                bidi_text = get_display(reshaped)
-            except Exception:
-                bidi_text = ar_text
+                # تقسيم النص إلى أسطر متعددة قبل إعادة تشكيله
+                wrapped_lines = split_text_to_fit(ar_text)
+                
+                x0, y0, x1, y1 = coord
+                y_offset = y1 + 10 # مسافة أوسع أسفل السطر الإنجليزي
+                
+                for line in wrapped_lines:
+                    reshaped = arabic_reshaper.reshape(line)
+                    bidi_text = get_display(reshaped)
+                    
+                    insert_point = fitz.Point(x0, min(y_offset, page.rect.height - 5))
+                    
+                    try:
+                        page.insert_text(
+                            insert_point,
+                            bidi_text,
+                            fontname=font_to_use,
+                            fontsize=8.5, # خط أكبر وأوضح
+                            color=(0.7, 0.1, 0.1),
+                            rotate=0
+                        )
+                    except Exception as e:
+                        logging.error(f"Error inserting text: {e}")
+                    
+                    # النزول للسطر التالي إذا كان النص مقسماً
+                    y_offset += 12 
 
-            x0, y0, x1, y1 = coord
-            insert_point = fitz.Point(x0, min(y1 + 4, page.rect.height - 5))
-
-            try:
-                page.insert_text(
-                    insert_point,
-                    bidi_text,
-                    fontname=font_to_use,
-                    fontsize=6.5,
-                    color=(0.7, 0.1, 0.1),
-                    rotate=0
-                )
             except Exception as e:
-                logging.error(f"Error inserting text: {e}")
+                 logging.error(f"Error processing arabic text: {e}")
 
         await asyncio.sleep(1.0)
 
@@ -143,7 +167,7 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
 async def handle_start(message: types.Message):
     await message.answer(
         "👋 مرحباً بك في **المترجم الأكاديمي السريع**!\n\n"
-        "أرسل ملف المحاضرة (PDF) وسأترجمه بسرعة متجاهلاً الأرقام والرموز للحفاظ على التنسيق 📄✨."
+        "أرسل ملف المحاضرة (PDF) وسأترجمه بسرعة وتنسيق مقروء 📄✨."
     )
 
 @dp.message(F.document)
@@ -153,7 +177,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري الترجمة الدقيقة (تم تجاوز الجداول والأرقام لتسريع العملية)...")
+    status_msg = await message.answer("📥 جاري الترجمة وتنسيق النصوص للطباعة المريحة...")
 
     try:
         pdf_io = io.BytesIO()
@@ -168,7 +192,7 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تمت الترجمة بالكامل بنجاح!"
+            caption="✅ تمت الترجمة وتعديل التنسيق بنجاح!"
         )
 
     except Exception as e:
@@ -190,7 +214,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بالنسخة المستقرة والسريعة...")
+    logging.info("🚀 البوت يعمل الآن بالنسخة المنسقة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
