@@ -14,37 +14,33 @@ from bidi.algorithm import get_display
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
-# المفتاح الجديد المصحح
-OPENROUTER_API_KEY = "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"
 
+# استخدام بوابة مجانية مفتوحة لا تحتاج إلى مفتاح ولا حساب ولا VPN
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY.strip(),
-    timeout=35.0
+    base_url="https://text.pollinations.ai/openai",
+    api_key="dummy-key-not-needed",  # مفتاح وهمي لأن الخدمة مجانية
+    timeout=60.0
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 SYSTEM_TRANSLATE_PROMPT = """
-أنت مترجم أكاديمي تخصصي.
-مهمتك: ترجمة الجمل العلمية التالية بدقة إلى العربية.
-القواعد:
-1. اذكر الترجمة فقط دون أي مقدمات.
-2. افصل بين كل فقرة وأخرى برمز ||| حصراً.
+أنت مترجم أكاديمي تخصصي للمحاضرات العلمية.
+ترجم كل فقرة بدقة إلى العربية وضع علامة ||| حصراً بين كل ترجمة والتي تليها دون أي إضافات.
 """
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text:
         return []
-    prompt = "ترجم كل فقرة علمية تالية إلى العربية وافصل بينها بـ ||| فقط:\n\n" + "\n---SPLIT---\n".join(blocks_text)
+    prompt = "ترجم كل فقرة مما يلي إلى العربية وافصل بينها بـ ||| فقط:\n\n" + "\n---SPLIT---\n".join(blocks_text)
 
     loop = asyncio.get_running_loop()
     try:
         response = await loop.run_in_executor(
             None,
             lambda: client.chat.completions.create(
-                model="openrouter/free",
+                model="gpt-4o",  # يتم توجيهه تلقائياً عبر البوابة المجانية
                 messages=[
                     {"role": "system", "content": SYSTEM_TRANSLATE_PROMPT},
                     {"role": "user", "content": prompt}
@@ -69,7 +65,7 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
         text_blocks = []
         valid_coords = []
         for b in blocks:
-            if b[6] == 0:  # استخراج النصوص فقط
+            if b[6] == 0:
                 txt = b[4].strip()
                 if len(txt) > 3:
                     text_blocks.append(txt.replace("\n", " "))
@@ -119,7 +115,7 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
 async def handle_start(message: types.Message):
     await message.answer(
         "👋 مرحباً بك في **المترجم الأكاديمي السحابي**!\n\n"
-        "أرسل لي ملف المحاضرة بصيغة PDF، وسأقوم بطباعة الترجمة العربية باللون الأحمر أسفل كل سطر مع الحفاظ على التصميم الأصلي 📄✨."
+        "أرسل ملف المحاضرة (PDF) وستتم طباعة الترجمة أسفل كل سطر مع الحفاظ على التصميم 📄✨."
     )
 
 @dp.message(F.document)
@@ -155,7 +151,6 @@ async def handle_pdf(message: types.Message):
         logging.error(f"خطأ أثناء المعالجة: {e}")
         await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
 
-# خادم ويب وهمي بسيط لتخطي فحص منافذ Render والحفاظ على اتصال الخدمة
 async def handle_ping(request):
     return web.Response(text="Bot is running alive!")
 
@@ -168,7 +163,6 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"Dummy Web Server running on port {port}")
 
 async def main():
     await start_web_server()
