@@ -29,7 +29,7 @@ if not os.path.exists(FONT_PATH):
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY.strip(),
-    timeout=30.0  # تقليل وقت الانتظار لأن النموذج الجديد سريع جداً
+    timeout=40.0
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -44,9 +44,9 @@ async def translate_blocks(blocks_text: list) -> list:
         prompt += f"{i}|| {text}\n"
 
     try:
-        # استخدام نموذج جوجل السريع جداً والداعم للعربية لتجنب الطوابير
+        # العودة للموجه التلقائي المستقر (لن يعطي 404 أبداً)
         response = await client.chat.completions.create(
-            model="google/gemma-2-9b-it:free",
+            model="openrouter/free",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
@@ -92,8 +92,7 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                # فلترة ذكية: ترجم فقط النصوص التي تتكون من 3 أحرف فأكثر وتحتوي على حروف إنجليزية
-                # هذا سيتجاهل جداول الأرقام والرموز ويسرّع العملية ويمنع الأخطاء
+                # الفلترة الذكية: أخذ النصوص التي تحتوي حروف إنجليزية فقط
                 if len(txt) > 2 and re.search('[a-zA-Z]', txt):
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
@@ -132,7 +131,6 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
             except Exception as e:
                 logging.error(f"Error inserting text: {e}")
 
-        # استراحة بسيطة لمدة ثانية واحدة فقط
         await asyncio.sleep(1.0)
 
     output = io.BytesIO()
@@ -155,7 +153,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري الترجمة السريعة والذكية...")
+    status_msg = await message.answer("📥 جاري الترجمة الدقيقة (تم تجاوز الجداول والأرقام لتسريع العملية)...")
 
     try:
         pdf_io = io.BytesIO()
@@ -170,7 +168,7 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تمت الترجمة بالكامل بنجاح وبسرعة فائقة!"
+            caption="✅ تمت الترجمة بالكامل بنجاح!"
         )
 
     except Exception as e:
@@ -192,7 +190,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بالنسخة السريعة...")
+    logging.info("🚀 البوت يعمل الآن بالنسخة المستقرة والسريعة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
