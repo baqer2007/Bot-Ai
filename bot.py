@@ -3,12 +3,13 @@ import io
 import asyncio
 import logging
 import urllib.request
+import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import BufferedInputFile
 from openai import AsyncOpenAI
-import fitz
+import fitz  # PyMuPDF
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -28,7 +29,7 @@ if not os.path.exists(FONT_PATH):
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY.strip(),
-    timeout=60.0
+    timeout=30.0  # تقليل وقت الانتظار لأن النموذج الجديد سريع جداً
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -43,13 +44,13 @@ async def translate_blocks(blocks_text: list) -> list:
         prompt += f"{i}|| {text}\n"
 
     try:
+        # استخدام نموذج جوجل السريع جداً والداعم للعربية لتجنب الطوابير
         response = await client.chat.completions.create(
-            model="openrouter/free",
+            model="google/gemma-2-9b-it:free",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
         
-        # حماية الكود من خطأ NoneType
         content = response.choices[0].message.content
         if not content:
             return ["" for _ in blocks_text]
@@ -91,7 +92,9 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                if len(txt) > 3 and not txt.isdigit():
+                # فلترة ذكية: ترجم فقط النصوص التي تتكون من 3 أحرف فأكثر وتحتوي على حروف إنجليزية
+                # هذا سيتجاهل جداول الأرقام والرموز ويسرّع العملية ويمنع الأخطاء
+                if len(txt) > 2 and re.search('[a-zA-Z]', txt):
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
 
@@ -115,7 +118,7 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                 bidi_text = ar_text
 
             x0, y0, x1, y1 = coord
-            insert_point = fitz.Point(x0, min(y1 + 3, page.rect.height - 5))
+            insert_point = fitz.Point(x0, min(y1 + 4, page.rect.height - 5))
 
             try:
                 page.insert_text(
@@ -129,7 +132,8 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
             except Exception as e:
                 logging.error(f"Error inserting text: {e}")
 
-        await asyncio.sleep(2.0)
+        # استراحة بسيطة لمدة ثانية واحدة فقط
+        await asyncio.sleep(1.0)
 
     output = io.BytesIO()
     doc.save(output)
@@ -140,8 +144,8 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
 @dp.message(CommandStart())
 async def handle_start(message: types.Message):
     await message.answer(
-        "👋 مرحباً بك في **المترجم الأكاديمي السحابي**!\n\n"
-        "أرسل ملف المحاضرة (PDF) وستتم ترجمة جميع الصفحات بالكامل 📄✨."
+        "👋 مرحباً بك في **المترجم الأكاديمي السريع**!\n\n"
+        "أرسل ملف المحاضرة (PDF) وسأترجمه بسرعة متجاهلاً الأرقام والرموز للحفاظ على التنسيق 📄✨."
     )
 
 @dp.message(F.document)
@@ -151,7 +155,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري الترجمة... يرجى الانتظار، معالجة الملفات الطويلة تستغرق بضع دقائق.")
+    status_msg = await message.answer("📥 جاري الترجمة السريعة والذكية...")
 
     try:
         pdf_io = io.BytesIO()
@@ -166,7 +170,7 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تمت ترجمة الملف بالكامل بنجاح!"
+            caption="✅ تمت الترجمة بالكامل بنجاح وبسرعة فائقة!"
         )
 
     except Exception as e:
@@ -188,7 +192,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن...")
+    logging.info("🚀 البوت يعمل الآن بالنسخة السريعة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
