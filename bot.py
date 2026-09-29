@@ -15,11 +15,13 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
 
-# استخدام بوابة مجانية مفتوحة لا تحتاج إلى مفتاح ولا حساب ولا VPN
+# الكود الآن سيبحث عن المفتاح في مكان سري داخل Render ولن يتم فضحه في GitHub
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+
 client = OpenAI(
-    base_url="https://text.pollinations.ai/openai",
-    api_key="dummy-key-not-needed",  # مفتاح وهمي لأن الخدمة مجانية
-    timeout=60.0
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY.strip(),
+    timeout=35.0
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -40,7 +42,7 @@ async def translate_blocks(blocks_text: list) -> list:
         response = await loop.run_in_executor(
             None,
             lambda: client.chat.completions.create(
-                model="gpt-4o",  # يتم توجيهه تلقائياً عبر البوابة المجانية
+                model="openrouter/free",
                 messages=[
                     {"role": "system", "content": SYSTEM_TRANSLATE_PROMPT},
                     {"role": "user", "content": prompt}
