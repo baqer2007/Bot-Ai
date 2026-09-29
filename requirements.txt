@@ -3,3 +3,4 @@ openai
 PyMuPDF
 arabic-reshaper
 python-bidi
+aiohttp
