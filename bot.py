@@ -2,6 +2,7 @@ import os
 import io
 import asyncio
 import logging
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import BufferedInputFile
@@ -12,34 +13,31 @@ from bidi.algorithm import get_display
 
 logging.basicConfig(level=logging.INFO)
 
-# قراءة المفاتيح من متغيرات البيئة السحابية أو القيم المباشرة
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
+# المفتاح الجديد المصحح
+OPENROUTER_API_KEY = "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"
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-    timeout=40.0
+    api_key=OPENROUTER_API_KEY.strip(),
+    timeout=35.0
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 SYSTEM_TRANSLATE_PROMPT = """
-أنت مترجم أكاديمي تخصصي للمحاضرات العلمية والهندسية.
-مهمتك: ترجمة الجمل التالية بدقة علمية عالية مع الحفاظ على المصطلحات.
+أنت مترجم أكاديمي تخصصي.
+مهمتك: ترجمة الجمل العلمية التالية بدقة إلى العربية.
 القواعد:
-1. ترجم كل فقرة سطراً بسطر إلى اللغة العربية.
-2. ضع علامة ||| حصراً بين ترجمة كل فقرة والتي تليها.
-3. لا تضف أي مقدمات أو شروحات جانبية؛ أرجع فقط النصوص المترجمة.
+1. اذكر الترجمة فقط دون أي مقدمات.
+2. افصل بين كل فقرة وأخرى برمز ||| حصراً.
 """
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text:
         return []
-    
-    prompt = "ترجم كل فقرة مما يلي إلى العربية، وافصل بين ترجمة كل فقرة برمز ||| فقط:\n\n"
-    prompt += "\n---SPLIT---\n".join(blocks_text)
+    prompt = "ترجم كل فقرة علمية تالية إلى العربية وافصل بينها بـ ||| فقط:\n\n" + "\n---SPLIT---\n".join(blocks_text)
 
     loop = asyncio.get_running_loop()
     try:
@@ -61,7 +59,6 @@ async def translate_blocks(blocks_text: list) -> list:
         return []
 
 def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
-    """إدراج الترجمة أسفل كل سطر داخل نفس ملف الـ PDF الأصلي"""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_limit = min(len(doc), max_pages)
 
@@ -72,8 +69,7 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
         text_blocks = []
         valid_coords = []
         for b in blocks:
-            # b: (x0, y0, x1, y1, text, block_no, block_type)
-            if b[6] == 0:  # استخراج النصوص وتخطي الصور
+            if b[6] == 0:  # استخراج النصوص فقط
                 txt = b[4].strip()
                 if len(txt) > 3:
                     text_blocks.append(txt.replace("\n", " "))
@@ -85,7 +81,7 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
         try:
             translations = asyncio.run(translate_blocks(text_blocks))
         except Exception as e:
-            logging.error(f"خطأ في صفحة {page_idx}: {e}")
+            logging.error(f"خطأ صفحة {page_idx}: {e}")
             continue
 
         for i, coord in enumerate(valid_coords):
@@ -105,7 +101,6 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
             x0, y0, x1, y1 = coord
             insert_point = fitz.Point(x0, min(y1 + 8, page.rect.height - 10))
 
-            # كتابة الترجمة باللون الأحمر الغامق
             page.insert_text(
                 insert_point,
                 bidi_text,
@@ -123,8 +118,8 @@ def process_pdf_interlinear(pdf_bytes: bytes, max_pages: int = 5) -> io.BytesIO:
 @dp.message(CommandStart())
 async def handle_start(message: types.Message):
     await message.answer(
-        "👋 مرحباً بك في **المساعد الأكاديمي السحابي**!\n\n"
-        "أرسل لي ملف المحاضرة بصيغة **PDF**، وسأقوم بطباعة الترجمة العربية باللون الأحمر أسفل كل سطر مع الحفاظ على نفس تصميم الملف الأصلي 📄✨."
+        "👋 مرحباً بك في **المترجم الأكاديمي السحابي**!\n\n"
+        "أرسل لي ملف المحاضرة بصيغة PDF، وسأقوم بطباعة الترجمة العربية باللون الأحمر أسفل كل سطر مع الحفاظ على التصميم الأصلي 📄✨."
     )
 
 @dp.message(F.document)
@@ -134,7 +129,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 جاري تحليل تصميم المحاضرة وإدراج الترجمة بين السطور في السحاب...")
+    status_msg = await message.answer("📥 جاري تحليل المحاضرة وإدراج الترجمة بين السطور...")
 
     try:
         pdf_io = io.BytesIO()
@@ -153,14 +148,30 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تم إدراج الترجمة أسفل كل سطر بنجاح في السحاب!"
+            caption="✅ تم إدراج الترجمة أسفل كل سطر بنجاح!"
         )
 
     except Exception as e:
         logging.error(f"خطأ أثناء المعالجة: {e}")
         await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
 
+# خادم ويب وهمي بسيط لتخطي فحص منافذ Render والحفاظ على اتصال الخدمة
+async def handle_ping(request):
+    return web.Response(text="Bot is running alive!")
+
+async def start_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/healthz", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Dummy Web Server running on port {port}")
+
 async def main():
+    await start_web_server()
     logging.info("🚀 البوت يعمل الآن في السحاب بنجاح...")
     await dp.start_polling(bot)
 
