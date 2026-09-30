@@ -74,6 +74,7 @@ class AppStates(StatesGroup):
     waiting_for_range = State()
     waiting_for_dict_term = State()
     waiting_for_search_query = State()
+    waiting_for_search_limit = State()
     waiting_for_calc_input = State()
     waiting_for_formula = State()
     waiting_for_lab_student_name = State()
@@ -87,9 +88,8 @@ class AppStates(StatesGroup):
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_USER_IDS
 
-# --- تنظيف ومعالجة رموز المعادلات واللاتكس ---
 def clean_math_text(text: str) -> str:
-    """تحويل رموز وصيغ LaTeX المشوهة إلى نصوص رياضية هندسية واضحة ومقروءة"""
+    """تنظيف شامل لرموز LaTeX والمعادلات الرياضية لتظهر مرتبة ومقروءة"""
     if not text: return ""
     replacements = [
         (r'\\frac\{([^}]+)\}\{([^}]+)\}', r'(\1 / \2)'),
@@ -134,7 +134,7 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
                 f"{frame} **{task_title}**\n\n"
                 f"⏱ الوقت المنقضي: `{elapsed} ثانية`\n"
                 f"🔄 المعالجة الأكاديمية: `[{bar_frame}]`\n\n"
-                f"💡 جاري كتابة وضبط التنسيق الهندسي..."
+                f"💡 جاري كتابة وضبط التنسيق الهندسي المعتمد..."
             )
         except TelegramBadRequest:
             pass
@@ -161,7 +161,7 @@ def get_main_menu(user_id: int):
 
 def get_pdf_actions():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 ترجمة بتنسيق احترافي متوازن", callback_data="action_translate")],
+        [InlineKeyboardButton(text="📝 ترجمة (بالصندوق الأزرق المتوازن)", callback_data="action_translate")],
         [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
         [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
          InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
@@ -171,6 +171,13 @@ def get_search_lang_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🇮🇶 بحث باللغة العربية", callback_data="search_ar"),
          InlineKeyboardButton(text="🇬🇧 Search in English", callback_data="search_en")]
+    ])
+
+def get_search_limit_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="عرض 3 ملفات", callback_data="limit_3"),
+         InlineKeyboardButton(text="عرض 5 ملفات", callback_data="limit_5"),
+         InlineKeyboardButton(text="عرض 10 ملفات", callback_data="limit_10")]
     ])
 
 def get_report_formats():
@@ -204,7 +211,7 @@ async def ai_request(prompt: str) -> str:
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
     prompt = (
-        "ترجم العبارات الهندسية والأكاديمية التالية إلى اللغة العربية بأسلوب علمي رصين ومختصر.\n"
+        "ترجم العبارات الهندسية والأكاديمية التالية إلى العربية بأسلوب علمي رصين ومختصر ومفهوم لطلاب كلية الهندسة.\n"
         "حافظ على الرموز والمعادلات الرياضية. التزم بصيغة الترقيم بالضبط (رقم|| النص المترجم).\n\n"
     )
     for i, text in enumerate(blocks_text):
@@ -220,7 +227,7 @@ async def translate_blocks(blocks_text: list) -> list:
                 translated_results[int(num_str)] = clean_math_text(parts[1].strip())
     return translated_results
 
-def split_text_to_fit(text, max_length=75):
+def split_text_to_fit(text, max_length=70):
     words = text.split()
     lines, current_line = [], ""
     for word in words:
@@ -269,7 +276,7 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         x = (595 - t_len) / 2
         safe_insert_arabic(page, fitz.Point(x, y), text, fname, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF بتنسيق متوازن مانع للتداخل والانزياح ---
+# --- معالجة وترجمة الـ PDF مع الصندوق الأزرق المتوازن وإزاحته لليسار ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
@@ -309,9 +316,11 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         new_page = out_doc.new_page(width=595, height=842)
         fname = prepare_page_font(new_page)
         
-        # ترويسة وتذييل الصفحة
+        # ترويسة الصفحة
         new_page.draw_line(fitz.Point(40, 40), fitz.Point(555, 40), color=(0.7, 0.7, 0.7), width=0.8)
         new_page.insert_text(fitz.Point(45, 35), f"Petroleum Engineering Dept | Page {idx}", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
+        
+        # تذييل الصفحة مع الحقوق
         new_page.draw_line(fitz.Point(40, 805), fitz.Point(555, 805), color=(0.7, 0.7, 0.7), width=0.8)
         wm_txt = "قسم هندسة النفط - جامعة كربلاء"
         t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(wm_txt)), fontsize=9)
@@ -324,29 +333,38 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 txt = clean_math_text(b[4].strip())
                 if not txt: continue
                 
-                # طباعة النص الإنجليزي (محاذاة لليسار بهامش 45)
+                # طباعة النص الإنجليزي الأصلي
                 for en_line in split_text_to_fit(txt.replace("\n", " "), max_length=90):
                     if y > 775:
                         new_page = out_doc.new_page(width=595, height=842)
                         fname = prepare_page_font(new_page)
                         y = 65
-                    new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.1, 0.1, 0.1))
+                    new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
                     y += 12
 
-                # طباعة الترجمة العربية مباشرة بتنسيق متوازن متكامل (محاذاة مدروسة من اليمين 545 بدون شذوذ)
+                # طباعة الترجمة العربية داخل الصندوق الأزرق الشفاف المريح مع إزاحة لليسار
                 if t_idx < len(translations) and translations[t_idx]:
                     ar_txt = translations[t_idx].strip()
                     if ar_txt and ar_txt != txt:
                         y += 2
-                        ar_lines = split_text_to_fit(ar_txt, max_length=75)
+                        ar_lines = split_text_to_fit(ar_txt, max_length=70)
+                        box_height = len(ar_lines) * 14 + 8
+                        
+                        if y + box_height > 775:
+                            new_page = out_doc.new_page(width=595, height=842)
+                            fname = prepare_page_font(new_page)
+                            y = 65
+                            
+                        # الصندوق الأزرق الشفاف: من x=55 إلى x=535 (مزاح لليسار ومتناسق)
+                        box_rect = fitz.Rect(55, y - 2, 535, y + box_height - 2)
+                        new_page.draw_rect(box_rect, color=(0.85, 0.90, 0.98), fill=(0.94, 0.97, 1.0))
+                        new_page.draw_line(fitz.Point(535, y - 2), fitz.Point(535, y + box_height - 2), color=(0.18, 0.38, 0.75), width=2.5)
+                        
+                        y += 10
                         for a_line in ar_lines:
-                            if y > 775:
-                                new_page = out_doc.new_page(width=595, height=842)
-                                fname = prepare_page_font(new_page)
-                                y = 65
                             t_w = fitz.get_text_length(get_display(arabic_reshaper.reshape(a_line)), fontsize=8.5)
-                            # تثبيت الهامش الأيمن عند 545 وضمان عدم خروجه لليسار
-                            x_pos = max(55, 545 - t_w)
+                            # تثبيت بداية النص العربي المريح عند x = 520 - t_w مع ضمان البقاء داخل الصندوق
+                            x_pos = max(65, 520 - t_w)
                             safe_insert_arabic(new_page, fitz.Point(x_pos, y), a_line, fname, fontsize=8.5, color=(0.08, 0.22, 0.58))
                             y += 13
                         y += 4
@@ -371,7 +389,7 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
         ("UNIVERSITY OF KERBALA - COLLEGE OF ENGINEERING", 18, 160, (0.1, 0.2, 0.5)),
         ("DEPARTMENT OF PETROLEUM ENGINEERING", 15, 200, (0.2, 0.3, 0.6)),
         (f"Lecture Presentation: {filename[:45]}", 22, 320, (0.05, 0.15, 0.35)),
-        ("Converted with Full Content & Equations Preservation", 13, 370, (0.3, 0.3, 0.3)),
+        ("Converted with Full Layout Formatting", 13, 370, (0.3, 0.3, 0.3)),
         ("Academic Year: 2026", 12, 540, (0.4, 0.4, 0.4))
     ]
     for txt, sz, y, col in cover_lines:
@@ -425,7 +443,7 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
     out.seek(0)
     return out
 
-# --- تقارير المختبر الأكاديمية بدون رموز مشوهة وبمعلومات مؤكدة ---
+# --- بناء وتنسيق تقارير المختبر الأكاديمية مع الجداول الرسمية ---
 def generate_full_academic_report(metadata: dict, report_content: str) -> io.BytesIO:
     doc = fitz.open()
     cover = doc.new_page(width=595, height=842)
@@ -434,7 +452,6 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     border_rect = fitz.Rect(30, 30, 565, 812)
     cover.draw_rect(border_rect, color=(0.1, 0.2, 0.45), width=2)
     
-    # تفادي النقاط الفارغة واستخدام القيم الافتراضية الأكاديمية
     s_name = metadata.get('name') if metadata.get('name') and metadata.get('name') != '.' else "باقر رعد عباس"
     s_dept = metadata.get('dept') if metadata.get('dept') and metadata.get('dept') != '.' else "هندسة النفط"
     s_stage = metadata.get('stage') if metadata.get('stage') and metadata.get('stage') != '.' else "الثانية"
@@ -477,18 +494,50 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     y = 70
 
     cleaned_content = clean_math_text(report_content)
-    for paragraph in cleaned_content.split("\n"):
-        clean_p = paragraph.strip()
-        if not clean_p:
-            y += 10
+    lines = cleaned_content.split("\n")
+    
+    in_table = False
+    for line in lines:
+        clean_l = line.strip()
+        if not clean_l:
+            y += 8
             continue
-            
-        is_heading = any(clean_p.startswith(h) for h in ["1.", "2.", "3.", "4.", "5.", "#", "Abstract", "Objective", "Theory", "Procedure", "Discussion", "Conclusion", "Reference"])
-        font_sz = 11.5 if is_heading else 9.0
-        font_col = (0.05, 0.15, 0.4) if is_heading else (0.12, 0.12, 0.12)
+
+        # معالجة وتنسيق الجداول الأكاديمية (Markdown Tables)
+        if "|" in clean_l:
+            if "---" in clean_l: 
+                continue # سطر فواصل الجدول
+            cells = [c.strip() for c in clean_l.split("|") if c.strip()]
+            if cells:
+                if y > 760:
+                    page_num += 1
+                    page, fname = create_content_page(page_num)
+                    y = 70
+                    
+                col_width = 500 / max(1, len(cells))
+                
+                # رأس الجدول يتميز بخلفية تظليل خفيفة
+                if not in_table:
+                    in_table = True
+                    page.draw_rect(fitz.Rect(45, y - 2, 550, y + 16), color=(0.75, 0.8, 0.9), fill=(0.90, 0.93, 0.98))
+                    for col_idx, cell_txt in enumerate(cells):
+                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 10), cell_txt[:25], fontname="helv", fontsize=9.0, color=(0.1, 0.2, 0.4))
+                    y += 20
+                else:
+                    page.draw_line(fitz.Point(45, y + 14), fitz.Point(550, y + 14), color=(0.85, 0.85, 0.85), width=0.5)
+                    for col_idx, cell_txt in enumerate(cells):
+                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 10), cell_txt[:25], fontname="helv", fontsize=8.5, color=(0.15, 0.15, 0.15))
+                    y += 18
+                continue
+        else:
+            in_table = False
+
+        is_heading = any(clean_l.startswith(h) for h in ["1.", "2.", "3.", "4.", "5.", "#", "Abstract", "Objective", "Theory", "Procedure", "Discussion", "Conclusion", "Reference", "Table"])
+        font_sz = 11.0 if is_heading else 9.0
+        font_col = (0.08, 0.18, 0.45) if is_heading else (0.15, 0.15, 0.15)
         
-        is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_p)
-        wrapped = split_text_to_fit(clean_p, max_length=70 if is_heading else 85)
+        is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_l)
+        wrapped = split_text_to_fit(clean_l, max_length=70 if is_heading else 85)
         
         for w_line in wrapped:
             if y > 760:
@@ -498,7 +547,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 
             if is_ar:
                 t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(w_line)), fontsize=font_sz)
-                safe_insert_arabic(page, fitz.Point(550 - t_len, y), w_line, fname, fontsize=font_sz, color=font_col)
+                safe_insert_arabic(page, fitz.Point(545 - t_len, y), w_line, fname, fontsize=font_sz, color=font_col)
             else:
                 page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
             y += (font_sz + 4)
@@ -570,7 +619,7 @@ async def handle_admin(event: types.Message | types.CallbackQuery):
     else:
         await event.answer(text)
 
-# --- محرك البحث في الأرشيف ---
+# --- محرك البحث في الأرشيف باختيار اللغة وعدد الملفات ---
 @dp.callback_query(F.data == "cmd_search_menu")
 async def cb_search_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🔍 **اختر لغة البحث في الأرشيف الأكاديمي:**", reply_markup=get_search_lang_menu())
@@ -579,37 +628,48 @@ async def cb_search_menu(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.in_(["search_ar", "search_en"]))
 async def cb_search_by_lang(callback: types.CallbackQuery, state: FSMContext):
     lang = "ar" if callback.data == "search_ar" else "en"
+    await state.update_data(search_lang=lang)
     msg = "🔍 اكتب الآن اسم المادة أو الكلمة الدلالية بالعربية:" if lang == "ar" else "🔍 Type the subject name or keyword in English:"
     await callback.message.edit_text(msg)
     await state.set_state(AppStates.waiting_for_search_query)
     await callback.answer()
 
 @dp.message(AppStates.waiting_for_search_query)
-async def process_search(message: types.Message, state: FSMContext):
-    query = message.text.strip().lower()
-    cursor.execute("SELECT id, file_name, file_id, rating_sum, rating_count FROM files WHERE keyword LIKE ? OR file_name LIKE ?", 
-                   (f"%{query}%", f"%{query}%"))
+async def process_search_query(message: types.Message, state: FSMContext):
+    await state.update_data(search_query=message.text.strip().lower())
+    await message.answer("📄 **حدد عدد الملفات التي ترغب بعرضها في النتائج:**", reply_markup=get_search_limit_menu())
+    await state.set_state(AppStates.waiting_for_search_limit)
+
+@dp.callback_query(AppStates.waiting_for_search_limit)
+async def process_search_with_limit(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    query = data.get("search_query", "")
+    limit = int(callback.data.replace("limit_", ""))
+    
+    cursor.execute("SELECT id, file_name, file_id, rating_sum, rating_count FROM files WHERE keyword LIKE ? OR file_name LIKE ? LIMIT ?", 
+                   (f"%{query}%", f"%{query}%", limit))
     rows = cursor.fetchall()
     
     if not rows:
-        await message.answer(
+        await callback.message.answer(
             f"❌ لم يتم العثور على ملازم تطابق '{query}'.\n"
             "💡 تأكد من حفظ وأرشفة الملف أولاً عبر خيار (أرشفة في مواد القسم) بعد رفع المحاضرة.",
-            reply_markup=get_main_menu(message.from_user.id)
+            reply_markup=get_main_menu(callback.from_user.id)
         )
     else:
-        await message.answer(f"📚 **نتائج البحث الأكاديمي ({len(rows)} ملف متوفر):**\n" + "—" * 25)
-        for idx, row in enumerate(rows[:5], 1):
+        await callback.message.answer(f"📚 **نتائج البحث الأكاديمي المنظمة ({len(rows)} ملف):**\n" + "—" * 28)
+        for idx, row in enumerate(rows, 1):
             f_id, name, telegram_fid, r_sum, r_cnt = row
             avg_rate = round(r_sum / max(1, r_cnt), 1)
             caption = (
-                f"📄 **ملف رقم {idx}:** `{name}`\n"
-                f"⭐ تقييم الدفعة: `{avg_rate}/5`\n"
+                f"📁 **المستند رقم {idx}:** `{name}`\n"
+                f"⭐ التقييم المعتمد: `{avg_rate}/5`\n"
                 f"🏛 قسم هندسة النفط - جامعة كربلاء"
             )
-            await message.answer_document(telegram_fid, caption=caption)
-        await message.answer("يمكنك الرجوع للقائمة الرئيسية في أي وقت:", reply_markup=get_main_menu(message.from_user.id))
+            await callback.message.answer_document(telegram_fid, caption=caption)
+        await callback.message.answer("يمكنك الرجوع للقائمة الرئيسية في أي وقت:", reply_markup=get_main_menu(callback.from_user.id))
     await state.clear()
+    await callback.answer()
 
 # --- إنشاء تقرير المختبر الشامل ---
 @dp.callback_query(F.data == "cmd_lab")
@@ -648,20 +708,21 @@ async def process_student_study_type(message: types.Message, state: FSMContext):
 @dp.message(AppStates.waiting_for_lab_data)
 async def process_lab_input(message: types.Message, state: FSMContext):
     raw_data = message.text.strip()
-    status_msg = await message.answer("✍️ **جاري صياغة التقرير الهندسي الشامل وتنظيف المعادلات...**")
+    status_msg = await message.answer("✍️ **جاري صياغة التقرير الهندسي الشامل وتنظيم الجداول...**")
     
     stop_event = asyncio.Event()
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة تقرير أكاديمي مفصل متعدد الصفحات", stop_event))
     
     prompt = (
         f"قم بصياغة تقرير مختبري جامعي رسمي مفصل باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
-        "مهم جداً: اكتب المعادلات الرياضية بصيغة نصية واضحة ومباشرة وتجنب تماماً استخدام رموز LaTeX المعقدة مثل \\frac و \\tag و $$ و [ ] لتكون مقروءة ومرتبة.\n"
+        "مهم جداً: اكتب المعادلات الرياضية بصيغة نصية واضحة وتجنب تماماً استخدام رموز LaTeX مثل \\frac و \\tag و $$ و [ ] لتكون مقروءة ومرتبة.\n"
+        "نظم بيانات النتائج في جداول Markdown منسقة واضحة.\n"
         "يجب أن يكون التقرير شاملاً ومفصلاً جداً ليمتد على عدة صفحات، ويشمل:\n"
         "1. Abstract & Introduction\n"
         "2. Theoretical Background & Mathematical Equations (مع توضيح الرموز)\n"
         "3. Apparatus & Materials Used\n"
         "4. Step-by-Step Experimental Procedure\n"
-        "5. Experimental Data & Sample Calculations\n"
+        "5. Experimental Data & Sample Calculations (في جدول منسق)\n"
         "6. In-Depth Results & Discussion\n"
         "7. Conclusions & Recommendations\n"
         "8. References\n"
@@ -690,7 +751,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
     content = data.get("lab_report", "")
     fmt = callback.data
     
-    status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والمعلومات...**")
+    status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والجداول...**")
     stop_event = asyncio.Event()
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات التقرير المتعددة", stop_event))
     
@@ -700,7 +761,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
         stop_event.set()
         counter_task.cancel()
         await status_msg.delete()
-        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية متعددة الصفحات!")
+        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع الجداول المنسقة!")
     elif fmt == "fmt_docx":
         doc_io = io.BytesIO()
         if DocxDocument:
@@ -872,7 +933,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف وترجمة المحتوى بالتنسيق المتوازن الجديد...**")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف وترجمة المحتوى بالصندوق الأزرق المتوازن...**")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -887,7 +948,7 @@ async def run_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(
             document=to_send, 
-            caption="✅ تمت الترجمة بنجاح بتنسيق متوازن مانع للانزياح والتداخل!",
+            caption="✅ تمت الترجمة وتنسيق الأسطر داخل الصندوق الأزرق المتوازن دون أي انزياح أو تداخل!",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
@@ -952,7 +1013,7 @@ async def cb_calc(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(AppStates.waiting_for_calc_input)
 async def process_calc(message: types.Message, state: FSMContext):
     q = message.text.strip()
-    status_msg = await message.answer("⚙️️ **جاري الحساب...**")
+    status_msg = await message.answer("⚙ **جاري الحساب...**")
     stop_event = asyncio.Event()
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري الحساب وتطبيق القوانين", stop_event))
     
@@ -1035,7 +1096,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل مع التنسيق المحسّن ومعالجة الرموز...")
+    logging.info("🚀 المنصة الأكاديمية تعمل مع الصندوق الأزرق والجداول المنسقة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
