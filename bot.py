@@ -33,14 +33,17 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO)
 
+# --- الإعدادات الثابتة ---
 TELEGRAM_BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-ADMIN_USER_IDS = [832023205, 832023272, 832023243, 832023294, 832023401, 832023416]
+ADMIN_ID_ENV = os.environ.get("ADMIN_ID", "832023205") 
+ADMIN_USER_IDS = [int(x.strip()) for x in ADMIN_ID_ENV.split(",") if x.strip().isdigit()]
+if not ADMIN_USER_IDS:
+    ADMIN_USER_IDS = [832023205]
 
 KEYS_STRING = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_API_KEY", ""))
 API_KEYS = [k.strip() for k in KEYS_STRING.split(",") if k.strip()]
 
-FONT_PATH = "Arabic-Regular.ttf"
-# روابط بديلة لضمان تحميل خط عربي سليم وعدم تلف الملف
+FONT_PATH = "Amiri-Regular.ttf"
 FONT_URLS = [
     "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo-Regular.ttf",
     "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf"
@@ -51,15 +54,14 @@ def ensure_font_downloaded():
         return
     for url in FONT_URLS:
         try:
-            logging.info(f"Downloading font from {url}...")
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=15) as response, open(FONT_PATH, 'wb') as out_file:
                 out_file.write(response.read())
             if os.path.getsize(FONT_PATH) > 50000:
-                logging.info("تم تحميل الخط العربي بنجاح!")
+                logging.info("تم تحميل الخط بنجاح.")
                 break
         except Exception as e:
-            logging.error(f"فشل تحميل الخط من الرابط: {e}")
+            logging.error(f"خطأ تحميل الخط: {e}")
 
 ensure_font_downloaded()
 
@@ -68,13 +70,16 @@ clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, tim
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# --- إعداد قاعدة البيانات ---
+# --- قاعدة البيانات ---
 db_conn = sqlite3.connect("academic_platform.db", check_same_thread=False)
 cursor = db_conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT, file_id TEXT, keyword TEXT, rating_sum INTEGER DEFAULT 5, rating_count INTEGER DEFAULT 1)")
 cursor.execute("CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY, notice TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
 cursor.execute("INSERT OR IGNORE INTO schedules (id, notice) VALUES (1, 'لا توجد تبليغات رسمية جديدة حالياً.')")
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bot_active', '1')")
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('translation_count', '0')")
 db_conn.commit()
 
 class AppStates(StatesGroup):
@@ -95,6 +100,47 @@ class AppStates(StatesGroup):
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_USER_IDS
+
+def is_bot_active() -> bool:
+    cursor.execute("SELECT value FROM settings WHERE key='bot_active'")
+    res = cursor.fetchone()
+    return res[0] == '1' if res else True
+
+async def check_api_usage() -> str:
+    if not API_KEYS: return "❌ لا توجد مفاتيح مسجلة."
+    results = "🔑 **تقرير استخدام مفاتيح API (OpenRouter):**\n\n"
+    async with aiohttp.ClientSession() as session:
+        for i, key in enumerate(API_KEYS, 1):
+            try:
+                async with session.get("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {key}"}) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        usage = data.get("data", {}).get("usage", 0)
+                        limit = data.get("data", {}).get("limit")
+                        limit_str = f"{limit}$" if limit else "غير محدود (Free)"
+                        results += f"🔹 **مفتاح {i}:**\n- الاستخدام: `{usage}$`\n- الحد الكلي: `{limit_str}`\n"
+                    else:
+                        results += f"🔹 **مفتاح {i}:** ❌ محظور (429)\n"
+            except:
+                pass
+    return results
+
+def get_admin_panel_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 الإحصائيات العامة", callback_data="admin_stats"),
+         InlineKeyboardButton(text="🔑 استخدام المفاتيح", callback_data="admin_api")],
+        [InlineKeyboardButton(text="📢 الإذاعة (Broadcast)", callback_data="admin_broadcast"),
+         InlineKeyboardButton(text="⚙️ إعدادات البوت", callback_data="admin_settings")],
+        [InlineKeyboardButton(text="🔙 العودة للقائمة الرئيسية", callback_data="cmd_start")]
+    ])
+
+def get_admin_settings_menu():
+    active = is_bot_active()
+    status_btn = "🔴 إيقاف البوت (صيانة)" if active else "🟢 تفعيل البوت (تشغيل)"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=status_btn, callback_data="admin_toggle_bot")],
+        [InlineKeyboardButton(text="🔙 رجوع للوحة الإدارة", callback_data="cmd_admin_panel")]
+    ])
 
 def clean_math_text(text: str) -> str:
     if not text: return ""
@@ -149,7 +195,7 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
                 f"{frame} **{task_title}**\n\n"
                 f"⏱ الوقت المنقضي: `{elapsed} ثانية`\n"
                 f"🔄 المعالجة الأكاديمية: `[{bar_frame}]`\n\n"
-                f"💡 جاري كتابة وضبط التنسيق الهندسي المعتمد..."
+                f"💡 جاري بناء الملف والتنسيق الطباعي..."
             )
         except TelegramBadRequest:
             pass
@@ -165,7 +211,7 @@ def get_main_menu(user_id: int):
          InlineKeyboardButton(text="📖 قاموس هندسة النفط", callback_data="cmd_dict")],
         [InlineKeyboardButton(text="🧮 حاسبة ومحول وحدات النفط", callback_data="cmd_calc"),
          InlineKeyboardButton(text="📐 مفسر المعادلات والرموز", callback_data="cmd_formula")],
-        [InlineKeyboardButton(text="📝 إنشاء تقرير مختبر أكاديمي", callback_data="cmd_lab"),
+        [InlineKeyboardButton(text="📝 إنشاء تقرير (بحث) أكاديمي", callback_data="cmd_lab"),
          InlineKeyboardButton(text="🔄 تحويل PowerPoint إلى PDF", callback_data="cmd_convert")],
         [InlineKeyboardButton(text="📅 الجدول والتبليغات الرسمية", callback_data="cmd_schedule"),
          InlineKeyboardButton(text="ℹ حول المنصة", callback_data="cmd_about")]
@@ -209,37 +255,50 @@ async def send_long_message(msg: types.Message, text: str, parse_mode=None):
     for i in range(0, len(text), 4000):
         await msg.answer(text[i:i+4000], parse_mode=parse_mode)
 
-async def ai_request(prompt: str) -> str:
+# نظام حماية من الـ Rate Limit 429 لـ OpenRouter
+async def ai_request_with_retry(prompt: str, retries=3) -> str:
     if not clients: return "لم يتم ضبط مفاتيح OpenRouter."
-    for client in clients:
-        try:
-            response = await client.chat.completions.create(
-                model="openrouter/free",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-            return response.choices[0].message.content or ""
-        except Exception:
-            continue
-    return "تعذر الاتصال بالذكاء الاصطناعي."
+    
+    for attempt in range(retries):
+        for client in clients:
+            try:
+                response = await client.chat.completions.create(
+                    model="openrouter/free",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=3000,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                # إذا ظهر خطأ Too Many Requests ننتظر قليلاً ثم نحاول مجدداً
+                if "429" in str(e) or "Too Many Requests" in str(e):
+                    await asyncio.sleep(3.5) # مهلة زمنية لتخطي حظر الـ 429
+                continue
+    return ""
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
     prompt = (
-        "ترجم العبارات الأكاديمية التالية إلى العربية بأسلوب علمي رصين ومختصر لطلاب الهندسة.\n"
+        "ترجم العبارات الهندسية والأكاديمية التالية إلى العربية بأسلوب علمي رصين.\n"
         "حافظ على الرموز والمعادلات الرياضية. التزم بصيغة الترقيم بالضبط (رقم|| النص المترجم).\n\n"
     )
     for i, text in enumerate(blocks_text):
         prompt += f"{i}|| {text}\n"
     
-    content = await ai_request(prompt)
+    content = await ai_request_with_retry(prompt)
     translated_results = ["" for _ in range(len(blocks_text))]
-    for line in content.split('\n'):
-        if '||' in line:
-            parts = line.split('||', 1)
-            num_str = parts[0].strip()
-            if num_str.isdigit() and 0 <= int(num_str) < len(blocks_text):
-                translated_results[int(num_str)] = clean_math_text(parts[1].strip())
+    
+    if content:
+        for line in content.split('\n'):
+            if '||' in line:
+                parts = line.split('||', 1)
+                num_str = parts[0].strip()
+                if num_str.isdigit() and 0 <= int(num_str) < len(blocks_text):
+                    translated_results[int(num_str)] = clean_math_text(parts[1].strip())
+        
+        cursor.execute("UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = 'translation_count'")
+        db_conn.commit()
+    
     return translated_results
 
 def split_text_to_fit(text, max_length=70):
@@ -275,7 +334,7 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         x = (595 - t_len) / 2
         page.insert_text(fitz.Point(x, y), bidi_text, fontname="arab", fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF עם حل اختفاء الحروف ومحاذاة الصندوق ---
+# --- معالجة وترجمة الـ PDF مع الحماية من توقف الصفحات 429 ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
@@ -295,7 +354,8 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 f"⏳ **جاري ترجمة وتنسيق المحاضرة أكاديمياً...**\n\n"
                 f"[{bar}] {percent}%\n"
                 f"📄 الصفحة: `{idx}` من `{total_pages}`\n"
-                f"⏱ الوقت: `{elapsed}s`"
+                f"⏱ الوقت: `{elapsed}s`\n"
+                f"🛡️ تم تفعيل نظام منع الحظر (Rate Limit Protection)"
             )
         except TelegramBadRequest:
             pass
@@ -310,7 +370,9 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 if len(txt) > 3 and re.search('[a-zA-Z]{2,}', txt):
                     text_blocks.append(clean_math_text(txt.replace("\n", " ")))
 
+        # ترجمة الصفحة مع المهلة الزمنية لتفادي توقف العداد 429
         translations = await translate_blocks(text_blocks) if text_blocks else []
+        await asyncio.sleep(2.5) # وقفة إجبارية بين كل صفحة وأخرى لسيرفر OpenRouter المجاني
         
         new_page = out_doc.new_page(width=595, height=842)
         prepare_page_font(new_page)
@@ -331,16 +393,16 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 txt = clean_math_text(b[4].strip())
                 if not txt: continue
                 
-                # طباعة النص الإنجليزي الأصلي
                 for en_line in split_text_to_fit(txt.replace("\n", " "), max_length=85):
                     if y > 760:
                         new_page = out_doc.new_page(width=595, height=842)
                         prepare_page_font(new_page)
                         y = 65
-                    new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
+                    try:
+                        new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
+                    except: pass
                     y += 13
 
-                # طباعة الترجمة داخل صندوق التظليل
                 if t_idx < len(translations) and translations[t_idx]:
                     ar_raw = translations[t_idx].strip()
                     if ar_raw and ar_raw != txt:
@@ -352,24 +414,24 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                             prepare_page_font(new_page)
                             y = 65
                             
-                        # الصندوق الأزرق: محاذاة مضبوطة من اليسار 55 إلى 535
-                        box_rect = fitz.Rect(55, y - 2, 535, y + box_height - 2)
+                        box_rect = fitz.Rect(45, y - 2, 545, y + box_height - 2)
                         new_page.draw_rect(box_rect, color=(0.82, 0.88, 0.96), fill=(0.94, 0.97, 1.0))
-                        new_page.draw_line(fitz.Point(535, y - 2), fitz.Point(535, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
+                        new_page.draw_line(fitz.Point(545, y - 2), fitz.Point(545, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
                         
                         cur_y = y + 10
                         for a_l in ar_lines:
-                            bidi_line = format_arabic(a_l)
-                            line_len = get_font_length(bidi_line, fontsize=8.5)
-                            # محاذاة النص داخل الصندوق: يمنع الانزياح الشديد لليمين
-                            x_target = max(65, 525 - line_len)
-                            new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontname="arab", fontsize=8.5, color=(0.08, 0.22, 0.58))
+                            try:
+                                bidi_line = format_arabic(a_l)
+                                line_len = get_font_length(bidi_line, fontsize=8.5)
+                                x_target = max(55, 535 - line_len)
+                                new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontname="arab", fontsize=8.5, color=(0.08, 0.22, 0.58))
+                            except Exception as ex:
+                                logging.error(f"تجاوز خطأ رسم السطر: {ex}")
                             cur_y += 14
                             
                         y += (box_height + 4)
                     t_idx += 1
                 y += 6
-        await asyncio.sleep(0.3)
 
     output = io.BytesIO()
     out_doc.save(output)
@@ -384,6 +446,7 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
     doc = fitz.open()
     
     cover = doc.new_page(width=792, height=612)
+    prepare_page_font(cover)
     cover_lines = [
         ("UNIVERSITY OF KERBALA - COLLEGE OF ENGINEERING", 18, 160, (0.1, 0.2, 0.5)),
         ("DEPARTMENT OF PETROLEUM ENGINEERING", 15, 200, (0.2, 0.3, 0.6)),
@@ -422,7 +485,8 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
                     if is_ar:
                         b_txt = format_arabic(clean_line)
                         t_len = get_font_length(b_txt, fontsize=9.5)
-                        page.insert_text(fitz.Point(740 - t_len, y_cursor), b_txt, fontname="arab", fontsize=9.5, color=(0.1, 0.1, 0.1))
+                        try: page.insert_text(fitz.Point(740 - t_len, y_cursor), b_txt, fontname="arab", fontsize=9.5, color=(0.1, 0.1, 0.1))
+                        except: pass
                     else:
                         page.insert_text(fitz.Point(50, y_cursor), f"• {clean_line[:105]}", fontname="helv", fontsize=9.5, color=(0.15, 0.15, 0.15))
                     y_cursor += 16
@@ -462,13 +526,15 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     headers = [
         ("جامعة كربلاء - كلية الهندسة", 22, 110),
         (f"قسم {s_dept}", 18, 150),
-        ("تقرير مختبري أكاديمي معتمد", 20, 300),
-        (f"عنوان التجربة: {l_title[:50]}", 14, 350)
+        ("التقرير البحثي والمختبري الأكاديمي", 20, 300),
+        (f"عنوان البحث: {l_title[:50]}", 14, 350)
     ]
     for txt, sz, y in headers:
-        b_txt = format_arabic(txt)
-        t_len = get_font_length(b_txt, fontsize=sz)
-        cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontname="arab", fontsize=sz, color=(0.08, 0.18, 0.45))
+        try:
+            b_txt = format_arabic(txt)
+            t_len = get_font_length(b_txt, fontsize=sz)
+            cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontname="arab", fontsize=sz, color=(0.08, 0.18, 0.45))
+        except: pass
         
     student_info = [
         f"اسم الطالب: {s_name}",
@@ -479,8 +545,10 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     ]
     y_info = 520
     for info in student_info:
-        b_info = format_arabic(info)
-        cover.insert_text(fitz.Point(360, y_info), b_info, fontname="arab", fontsize=12, color=(0.15, 0.15, 0.15))
+        try:
+            b_info = format_arabic(info)
+            cover.insert_text(fitz.Point(360, y_info), b_info, fontname="arab", fontsize=12, color=(0.15, 0.15, 0.15))
+        except: pass
         y_info += 28
 
     def create_content_page(p_num):
@@ -518,23 +586,22 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 col_width = 500 / max(1, len(cells))
                 if not in_table:
                     in_table = True
-                    # رأس الجدول
                     page.draw_rect(fitz.Rect(45, y - 2, 550, y + 18), color=(0.15, 0.25, 0.55), fill=(0.85, 0.90, 0.98))
                     for col_idx, cell_txt in enumerate(cells):
-                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 11), cell_txt[:35], fontname="helv", fontsize=10.0, color=(0.1, 0.15, 0.4))
+                        try: page.insert_text(fitz.Point(50 + col_idx * col_width, y + 11), cell_txt[:35], fontname="helv", fontsize=10.0, color=(0.1, 0.15, 0.4))
+                        except: pass
                     y += 22
                 else:
-                    # صفوف الجدول
                     page.draw_line(fitz.Point(45, y + 16), fitz.Point(550, y + 16), color=(0.8, 0.8, 0.8), width=0.5)
                     for col_idx, cell_txt in enumerate(cells):
-                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 11), cell_txt[:35], fontname="helv", fontsize=9.0, color=(0.15, 0.15, 0.15))
+                        try: page.insert_text(fitz.Point(50 + col_idx * col_width, y + 11), cell_txt[:35], fontname="helv", fontsize=9.0, color=(0.15, 0.15, 0.15))
+                        except: pass
                     y += 18
                 continue
         else:
             in_table = False
 
-        # تمييز العناوين باللون الكحلي والبنط العريض
-        is_heading = any(clean_l.startswith(h) for h in ["1.", "2.", "3.", "4.", "5.", "#", "Abstract", "Objective", "Theory", "Procedure", "Discussion", "Conclusion", "Reference", "Table"])
+        is_heading = any(clean_l.startswith(h) for h in ["1.", "2.", "3.", "4.", "5.", "#", "Abstract", "Objective", "Theory", "Procedure", "Discussion", "Conclusion", "Reference"])
         font_sz = 12.0 if is_heading else 9.5
         font_col = (0.05, 0.15, 0.45) if is_heading else (0.12, 0.12, 0.12)
         
@@ -547,12 +614,16 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 page = create_content_page(page_num)
                 y = 70
                 
-            if is_ar:
-                b_line = format_arabic(w_line)
-                t_len = get_font_length(b_line, fontsize=font_sz)
-                page.insert_text(fitz.Point(545 - t_len, y), b_line, fontname="arab", fontsize=font_sz, color=font_col)
-            else:
-                page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
+            try:
+                if is_ar:
+                    b_line = format_arabic(w_line)
+                    t_len = get_font_length(b_line, fontsize=font_sz)
+                    page.insert_text(fitz.Point(545 - t_len, y), b_line, fontname="arab", fontsize=font_sz, color=font_col)
+                else:
+                    page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
+            except Exception as e:
+                logging.error(f"تجاوز رمز غير مدعوم في البحث: {e}")
+                pass 
             y += (font_sz + 4)
             
         y += 6
@@ -573,6 +644,11 @@ async def handle_start(message: types.Message, state: FSMContext):
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", 
                    (message.from_user.id, message.from_user.username or ""))
     db_conn.commit()
+    
+    if not is_bot_active() and not is_admin(message.from_user.id):
+        await message.answer("⚠️ **البوت حالياً تحت الصيانة الدورية.** يرجى المحاولة لاحقاً.")
+        return
+        
     text = (
         "👋 مرحباً بك في **منصة هندسة النفط الأكاديمية الشاملة** (جامعة كربلاء).\n\n"
         "أرسل أي ملف (PDF, PowerPoint, Word) للمباشرة، أو اختر إحدى الخدمات المتاحة أدناه:"
@@ -581,6 +657,7 @@ async def handle_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_quick_trans")
 async def cb_quick_trans(callback: types.CallbackQuery):
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
     await callback.message.answer("📄 **يرجى إرسال ملف المحاضرة (PDF) الآن** للبدء بالترجمة الأكاديمية والتنسيق.")
     await callback.answer()
 
@@ -595,35 +672,79 @@ async def cb_about(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_main_menu(callback.from_user.id))
     await callback.answer()
 
-@dp.message(Command("admin"))
+# --- وظائف المشرف (Admin Panel) ---
 @dp.callback_query(F.data == "cmd_admin_panel")
-async def handle_admin(event: types.Message | types.CallbackQuery):
-    user_id = event.from_user.id
-    if not is_admin(user_id):
-        ADMIN_USER_IDS.append(user_id)
-        
+async def cb_admin_panel(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    await callback.message.edit_text("👑 **لوحة تحكم إدارة المنصة:**\n\nاختر من الإعدادات أدناه:", reply_markup=get_admin_panel_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: types.CallbackQuery):
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM files")
     total_files = cursor.fetchone()[0]
+    cursor.execute("SELECT value FROM settings WHERE key='translation_count'")
+    trans_res = cursor.fetchone()
+    total_trans = trans_res[0] if trans_res else 0
     
     text = (
-        f"👑 **لوحة تحكم إدارة المنصة:**\n\n"
-        f"🆔 معرّفك الحالي: `{user_id}`\n"
+        f"📊 **الإحصائيات العامة للمنصة:**\n\n"
         f"👥 الطلاب المشتركين: `{total_users}`\n"
-        f"📚 الملفات المؤرشفة: `{total_files}`\n\n"
-        f"الأوامر المتاحة:\n"
-        f"- إرسال إذاعة عامة: `/broadcast نص الرسالة`\n"
-        f"- تحديث الجدول الرسمي: `/set_schedule نص الجدول`"
+        f"📚 الملفات المؤرشفة: `{total_files}`\n"
+        f"📝 إجمالي عمليات الترجمة: `{total_trans}`\n"
     )
-    if isinstance(event, types.CallbackQuery):
-        await event.message.answer(text)
-        await event.answer()
-    else:
-        await event.answer(text)
+    await callback.message.edit_text(text, reply_markup=get_admin_panel_menu())
+    await callback.answer()
 
+@dp.callback_query(F.data == "admin_api")
+async def cb_admin_api(callback: types.CallbackQuery):
+    await callback.message.edit_text("⏳ جاري فحص حالة مفاتيح الـ API...")
+    res = await check_api_usage()
+    await callback.message.edit_text(res, reply_markup=get_admin_panel_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_settings")
+async def cb_admin_settings(callback: types.CallbackQuery):
+    await callback.message.edit_text("⚙️ **إعدادات البوت والتحكم:**", reply_markup=get_admin_settings_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_toggle_bot")
+async def cb_admin_toggle(callback: types.CallbackQuery):
+    new_val = '0' if is_bot_active() else '1'
+    cursor.execute("UPDATE settings SET value = ? WHERE key = 'bot_active'", (new_val,))
+    db_conn.commit()
+    await callback.message.edit_text("✅ تم تحديث حالة البوت بنجاح.", reply_markup=get_admin_settings_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def cb_admin_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📢 **الإذاعة العامة:**\n\nأرسل الآن الرسالة التي تريد إرسالها لجميع الطلاب المشتركين:")
+    await state.set_state(AppStates.waiting_for_broadcast)
+    await callback.answer()
+
+@dp.message(AppStates.waiting_for_broadcast)
+async def process_broadcast(message: types.Message, state: FSMContext):
+    broadcast_msg = message.text.strip()
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    sent = 0
+    await message.answer("⏳ جاري الإرسال...")
+    for (u_id,) in users:
+        try:
+            await bot.send_message(u_id, f"📢 **تبليغ رسمي من ممثلية القسم:**\n\n{broadcast_msg}")
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+    await message.answer(f"✅ تم إرسال الإذاعة بنجاح إلى {sent} طالب.", reply_markup=get_admin_panel_menu())
+    await state.clear()
+
+# --- محرك البحث في الأرشيف المتقدم ---
 @dp.callback_query(F.data == "cmd_search_menu")
 async def cb_search_menu(callback: types.CallbackQuery, state: FSMContext):
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
     await callback.message.edit_text("🔍 **اختر لغة البحث في الأرشيف الأكاديمي:**", reply_markup=get_search_lang_menu())
     await callback.answer()
 
@@ -673,9 +794,11 @@ async def process_search_with_limit(callback: types.CallbackQuery, state: FSMCon
     await state.clear()
     await callback.answer()
 
+# --- إنشاء تقرير المختبر الشامل ---
 @dp.callback_query(F.data == "cmd_lab")
 async def cb_lab_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📝 **صياغة تقرير مختبر أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    await callback.message.edit_text("📝 **صياغة تقرير بحثي مختبري أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
     await state.set_state(AppStates.waiting_for_lab_student_name)
     await callback.answer()
 
@@ -715,21 +838,20 @@ async def process_lab_input(message: types.Message, state: FSMContext):
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة تقرير أكاديمي مفصل متعدد الصفحات", stop_event))
     
     prompt = (
-        f"قم بصياغة تقرير مختبري جامعي رسمي مفصل باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
-        "مهم جداً: اكتب المعادلات الرياضية بصيغة نصية واضحة وتجنب تماماً استخدام رموز LaTeX مثل \\frac و \\tag و $$ و [ ] لتكون مقروءة ومرتبة.\n"
-        "نظم بيانات النتائج في جداول Markdown منسقة واضحة.\n"
-        "يجب أن يكون التقرير طويلاً وشاملاً ومفصلاً ليمتد على 4 صفحات على الأقل، ويشمل:\n"
+        f"قم بصياغة تقرير بحثي مختبري جامعي رسمي مفصل باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
+        "مهم جداً: اكتب المعادلات الرياضية بصيغة نصية واضحة وتجنب تماماً استخدام رموز LaTeX مثل \\frac و \\tag و $$ لتكون مقروءة ومرتبة.\n"
+        "يجب أن يكون التقرير طويلاً وشاملاً ومفصلاً ليمتد على 4 صفحات على الأقل، ويشمل بدقة:\n"
         "1. Abstract & Introduction\n"
-        "2. Theoretical Background & Mathematical Equations (مع توضيح الرموز)\n"
+        "2. Theoretical Background & Mathematical Equations\n"
         "3. Apparatus & Materials Used\n"
         "4. Step-by-Step Experimental Procedure\n"
-        "5. Experimental Data & Sample Calculations (في جدول منسق)\n"
+        "5. Experimental Data & Sample Calculations (في جدول منسق Markdown)\n"
         "6. In-Depth Results & Discussion\n"
         "7. Conclusions & Recommendations\n"
         "8. References\n"
-        "اكتب المحتوى بأسلوب أكاديمي رسمي متبع في كلية الهندسة."
+        "تأكد من أن المحتوى طويل وغني بالمعلومات الهندسية."
     )
-    report_content = await ai_request(prompt)
+    report_content = await ai_request_with_retry(prompt)
     
     stop_event.set()
     counter_task.cancel()
@@ -754,7 +876,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
     
     status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والجداول الأكاديمية...**")
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات التقرير المتعددة", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات البحث المتعددة بأمان", stop_event))
     
     if fmt == "fmt_pdf":
         pdf_io = generate_full_academic_report(metadata, content)
@@ -762,7 +884,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
         stop_event.set()
         counter_task.cancel()
         await status_msg.delete()
-        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع العناوين والجداول المنسقة!")
+        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع العناوين والجداول المنسقة ولن يتوقف بصفحة واحدة!")
     elif fmt == "fmt_docx":
         doc_io = io.BytesIO()
         if DocxDocument:
@@ -796,6 +918,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_convert")
 async def cb_convert_prompt(callback: types.CallbackQuery):
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
     await callback.message.edit_text(
         "🔄 **تحويل العروض التقديمية (PowerPoint) إلى PDF بالكامل:**\n\n"
         "أرسل الآن ملف PowerPoint (.pptx) في المحادثة وسيقوم البوت بتحويل كافة النصوص والمسائل والجداول العميقة إلى مستند PDF منسق.",
@@ -805,6 +928,7 @@ async def cb_convert_prompt(callback: types.CallbackQuery):
 
 @dp.message(F.document)
 async def handle_incoming_documents(message: types.Message, state: FSMContext):
+    if not is_bot_active() and not is_admin(message.from_user.id): return
     doc_name = message.document.file_name.lower()
     file_id = message.document.file_id
     
@@ -878,7 +1002,7 @@ async def process_pdf_action(callback: types.CallbackQuery, state: FSMContext):
             
             text_acc = "".join([f"\n{doc[i].get_text()}" for i in range(min(6, len(doc)))])
             prompt = f"لخص هذه المحاضرة في هندسة النفط باللغة العربية مع إبراز: القوانين والمعادلات، التعاريف الهامة، والأسئلة الامتحانية المتوقعة:\n\n{text_acc[:3500]}"
-            summary = await ai_request(prompt)
+            summary = await ai_request_with_retry(prompt)
             
             stop_event.set()
             counter_task.cancel()
@@ -933,7 +1057,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف وترجمة المحتوى بالصندوق المتناسق الجديد...**")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف وترجمة المحتوى بالصندوق المتناسق الجديد...**\n🛡️ تم تفعيل الحماية من قيود السيرفر (Rate Limit)")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -948,7 +1072,7 @@ async def run_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(
             document=to_send, 
-            caption="✅ تمت الترجمة وتنسيق الأسطر داخل الصندوق الأزرق بهوامش محكمة وظهور كامل للخط العربي!",
+            caption="✅ تمت الترجمة وتنسيق الأسطر داخل الصندوق الأزرق بهوامش محكمة وظهور كامل للخط العربي ولن يتوقف العداد!",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
@@ -959,6 +1083,7 @@ async def run_translation(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_dict")
 async def cb_dict(callback: types.CallbackQuery, state: FSMContext):
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
     await callback.message.edit_text("📖 **قاموس هندسة النفط:**\n\nأرسل الآن المصطلح الهندسي للبحث عن تعريفه واستخداماته:")
     await state.set_state(AppStates.waiting_for_dict_term)
     await callback.answer()
@@ -971,7 +1096,7 @@ async def process_dict(message: types.Message, state: FSMContext):
     counter_task = asyncio.create_task(run_live_counter(status_msg, f"جاري البحث عن المصطلح '{term}'", stop_event))
     
     prompt = f"اشرح المصطلح الهندسي النفطي '{term}' شرحاً دقيقاً لطلاب هندسة النفط، مع توضيح أهميته الميدانية والمصطلحات المرتبطة."
-    res = await ai_request(prompt)
+    res = await ai_request_with_retry(prompt)
     
     stop_event.set()
     counter_task.cancel()
@@ -982,6 +1107,7 @@ async def process_dict(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_formula")
 async def cb_formula(callback: types.CallbackQuery, state: FSMContext):
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
     await callback.message.edit_text("📐 **مفسر المعادلات والرموز:**\n\nأرسل المعادلة الرياضية أو القانون لشرح دلالة الرموز وتطبيقاتها:")
     await state.set_state(AppStates.waiting_for_formula)
     await callback.answer()
@@ -994,7 +1120,7 @@ async def process_formula(message: types.Message, state: FSMContext):
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري تحليل الرموز والمعادلات", stop_event))
     
     prompt = f"اشرح المعادلة والرموز الرياضية التالية بالتفصيل بصيغة نصية واضحة بدون رموز لاتكس مشوهة: '{form}'. وضح كل رمز، والوحدات الحقلية والمخبرية، وتطبيقاتها في هندسة النفط."
-    res = await ai_request(prompt)
+    res = await ai_request_with_retry(prompt)
     
     stop_event.set()
     counter_task.cancel()
@@ -1005,8 +1131,8 @@ async def process_formula(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_calc")
 async def cb_calc(callback: types.CallbackQuery, state: FSMContext):
-    text = "🧮 **حاسبة ومحول وحدات النفط:**\n\nأرسل مسألتك أو التحويل المطلوب لحسابها خطوة بخطوة بالوحدات الهندسية:"
-    await callback.message.edit_text(text)
+    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    await callback.message.edit_text("🧮 **حاسبة ومحول وحدات النفط:**\n\nأرسل مسألتك أو التحويل المطلوب لحسابها خطوة بخطوة بالوحدات الهندسية:")
     await state.set_state(AppStates.waiting_for_calc_input)
     await callback.answer()
 
@@ -1018,7 +1144,7 @@ async def process_calc(message: types.Message, state: FSMContext):
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري الحساب وتطبيق القوانين", stop_event))
     
     prompt = f"حل هذه المسألة الهندسية النفطية بخطوات رياضية واضحة واذكر القوانين والوحدات الصحيحة بنص مقروء ومرتب: {q}"
-    res = await ai_request(prompt)
+    res = await ai_request_with_retry(prompt)
     
     stop_event.set()
     counter_task.cancel()
@@ -1033,36 +1159,6 @@ async def cb_schedule(callback: types.CallbackQuery):
     notice = cursor.fetchone()[0]
     await callback.message.edit_text(f"📅 **جدول المحاضرات والتبليغات الرسمية:**\n\n{notice}", reply_markup=get_main_menu(callback.from_user.id))
     await callback.answer()
-
-@dp.message(Command("broadcast"))
-async def cmd_broadcast(message: types.Message):
-    if not is_admin(message.from_user.id): return
-    broadcast_msg = message.text.replace("/broadcast", "").strip()
-    if not broadcast_msg:
-        await message.answer("⚠️ اكتب نص الإذاعة بعد الأمر.")
-        return
-    cursor.execute("SELECT user_id FROM users")
-    users = cursor.fetchall()
-    sent = 0
-    for (u_id,) in users:
-        try:
-            await bot.send_message(u_id, f"📢 **تبليغ رسمي من ممثلية القسم:**\n\n{broadcast_msg}")
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception:
-            pass
-    await message.answer(f"✅ تم إرسال الإذاعة بنجاح إلى {sent} طالب.")
-
-@dp.message(Command("set_schedule"))
-async def cmd_set_schedule(message: types.Message):
-    if not is_admin(message.from_user.id): return
-    new_schedule = message.text.replace("/set_schedule", "").strip()
-    if not new_schedule:
-        await message.answer("⚠️ اكتب محتوى الجدول بعد الأمر.")
-        return
-    cursor.execute("UPDATE schedules SET notice = ? WHERE id = 1", (new_schedule,))
-    db_conn.commit()
-    await message.answer("✅ تم تحديث الجدول الدراسي بنجاح.")
 
 # ==========================================
 # خادم الويب ومنع نوم السيرفر (Self Ping)
@@ -1096,7 +1192,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل مع الصندوق الأزرق المريح والجداول المنسقة...")
+    logging.info("🚀 المنصة الأكاديمية تعمل مع لوحة الإدارة المتكاملة والحماية من الانهيار والحدود (429)...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
