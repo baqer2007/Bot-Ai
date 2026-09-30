@@ -31,7 +31,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
-ADMIN_USER_IDS = [832023205, 832023272, 832023243]
+ADMIN_USER_IDS = [832023205, 832023272, 832023243, 832023294]
 
 KEYS_STRING = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_API_KEY", ""))
 API_KEYS = [k.strip() for k in KEYS_STRING.split(",") if k.strip()]
@@ -42,12 +42,12 @@ FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-
 def ensure_font_downloaded():
     if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 50000:
         try:
-            logging.info("Downloading Amiri-Regular font...")
+            logging.info("Downloading Amiri font...")
             opener = urllib.request.build_opener()
             opener.addheaders = [('User-agent', 'Mozilla/5.0')]
             urllib.request.install_opener(opener)
             urllib.request.urlretrieve(FONT_URL, FONT_PATH)
-            logging.info(f"Font downloaded successfully. Size: {os.path.getsize(FONT_PATH)} bytes")
+            logging.info("Font downloaded successfully.")
         except Exception as e:
             logging.error(f"Failed to download font: {e}")
 
@@ -58,7 +58,7 @@ clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, tim
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# --- إعداد قاعدة البيانات ---
+# --- قاعدة البيانات ---
 db_conn = sqlite3.connect("academic_platform.db", check_same_thread=False)
 cursor = db_conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
@@ -71,38 +71,39 @@ class AppStates(StatesGroup):
     waiting_for_action = State()
     waiting_for_range = State()
     waiting_for_dict_term = State()
+    waiting_for_search_lang = State()
     waiting_for_search_query = State()
     waiting_for_calc_input = State()
     waiting_for_formula = State()
+    waiting_for_lab_student_name = State()
+    waiting_for_lab_dept = State()
+    waiting_for_lab_stage = State()
+    waiting_for_lab_study_type = State()
     waiting_for_lab_data = State()
     waiting_for_lab_format = State()
     waiting_for_broadcast = State()
-    waiting_for_schedule_update = State()
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_USER_IDS
 
-# --- نظام العداد والمؤشر الحي التفاعلي ---
 async def run_live_counter(status_msg: types.Message, task_title: str, stop_event: asyncio.Event):
-    """عداد ثوانٍ تفاعلي يُظهر أن المعالجة جارية دون توقف"""
     start_time = time.time()
     frames = ["⏳", "⌛"]
     step = 0
     while not stop_event.is_set():
         try:
             await asyncio.sleep(2.5)
-            if stop_event.is_set():
-                break
+            if stop_event.is_set(): break
             elapsed = int(time.time() - start_time)
             frame = frames[step % len(frames)]
-            bars = ["▒▒▒▒▒▒▒▒▒▒", "█▒▒▒▒▒▒▒▒▒", "██▒▒▒▒▒▒▒▒", "███▒▒▒▒▒▒▒", "████▒▒▒▒▒▒", "█████▒▒▒▒▒", "██████▒▒▒▒", "███████▒▒▒", "████████▒▒", "█████████▒", "██████████"]
+            bars = ["▒▒▒▒▒▒▒▒▒▒", "███▒▒▒▒▒▒▒", "██████▒▒▒▒", "█████████▒", "██████████"]
             bar_frame = bars[step % len(bars)]
             step += 1
             await status_msg.edit_text(
                 f"{frame} **{task_title}**\n\n"
-                f"⏱ الوقت المنقضي: `{elapsed} ثانية`\n"
-                f"🔄 حالة المعالجة: `[{bar_frame}]`\n\n"
-                f"💡 الذكاء الاصطناعي يعالج البيانات بدقة، يرجى الانتظار..."
+                f"⏱ الوقت المستغرق: `{elapsed} ثانية`\n"
+                f"🔄 المعالجة: `[{bar_frame}]`\n\n"
+                f"💡 جاري إنشاء البيانات والتنسيق، يرجى الانتظار..."
             )
         except TelegramBadRequest:
             pass
@@ -114,12 +115,12 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
 def get_main_menu(user_id: int):
     keyboard = [
         [InlineKeyboardButton(text="📄 ترجمة ملف محاضرة (PDF)", callback_data="cmd_quick_trans")],
-        [InlineKeyboardButton(text="🔍 بحث في الأرشيف", callback_data="cmd_search"),
+        [InlineKeyboardButton(text="🔍 بحث في الأرشيف الأكاديمي", callback_data="cmd_search_menu"),
          InlineKeyboardButton(text="📖 قاموس هندسة النفط", callback_data="cmd_dict")],
-        [InlineKeyboardButton(text="🧮 حاسبة ومحول وحدات", callback_data="cmd_calc"),
+        [InlineKeyboardButton(text="🧮 حاسبة وتحويل وحدات", callback_data="cmd_calc"),
          InlineKeyboardButton(text="📐 مفسر المعادلات والرموز", callback_data="cmd_formula")],
         [InlineKeyboardButton(text="📝 إنشاء تقرير مختبر أكاديمي", callback_data="cmd_lab"),
-         InlineKeyboardButton(text="🔄 استخراج وتحويل المستندات", callback_data="cmd_convert")],
+         InlineKeyboardButton(text="🔄 تحويل PowerPoint إلى PDF", callback_data="cmd_convert")],
         [InlineKeyboardButton(text="📅 الجدول والتبليغات الرسمية", callback_data="cmd_schedule"),
          InlineKeyboardButton(text="ℹ حول المنصة", callback_data="cmd_about")]
     ]
@@ -133,6 +134,12 @@ def get_pdf_actions():
         [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
         [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
          InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
+    ])
+
+def get_search_lang_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇮🇶 بحث باللغة العربية", callback_data="search_ar"),
+         InlineKeyboardButton(text="🇬🇧 Search in English", callback_data="search_en")]
     ])
 
 def get_report_formats():
@@ -161,7 +168,7 @@ async def ai_request(prompt: str) -> str:
             return response.choices[0].message.content or ""
         except Exception:
             continue
-    return "تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً."
+    return "تعذر الاتصال بالذكاء الاصطناعي حالياً."
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
@@ -199,6 +206,9 @@ def safe_insert_arabic(page: fitz.Page, point: fitz.Point, text: str, fontsize=8
     bidi_text = get_display(reshaped)
     has_font = os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000
 
+    if rotate not in [0, 90, 180, 270]:
+        rotate = 0
+
     if has_font:
         try:
             page.insert_text(point, bidi_text, fontfile=FONT_PATH, fontsize=fontsize, color=color, rotate=rotate)
@@ -226,8 +236,9 @@ def add_academic_cover(doc: fitz.Document, filename: str):
 def apply_watermark(page: fitz.Page):
     wm_text = "قسم هندسة النفط - جامعة كربلاء"
     rect = page.rect
-    point = fitz.Point(rect.width * 0.15, rect.height * 0.5)
-    safe_insert_arabic(page, point, wm_text, fontsize=24, color=(0.84, 0.84, 0.84), rotate=35)
+    t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(wm_text)), fontsize=16)
+    point = fitz.Point((rect.width - t_len) / 2, rect.height - 30)
+    safe_insert_arabic(page, point, wm_text, fontsize=14, color=(0.75, 0.75, 0.75), rotate=0)
 
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -248,7 +259,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 f"⏳ **جاري الترجمة والتنسيق الأكاديمي...**\n\n"
                 f"[{bar}] {percent}%\n"
                 f"📄 الصفحة: `{page_idx}` من `{total_pages}`\n"
-                f"⏱ الوقت المنقضي: `{elapsed}s`"
+                f"⏱ الوقت: `{elapsed}s`"
             )
         except TelegramBadRequest:
             pass
@@ -307,41 +318,139 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
     output.seek(0)
     return output
 
-def generate_pdf_report(report_title: str, report_text: str) -> io.BytesIO:
+# --- تحويل حقيقي لملف PowerPoint إلى PDF منسق بالكامل ---
+def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.BytesIO:
+    prs = Presentation(pptx_io)
     doc = fitz.open()
-    cover = doc.new_page(width=595, height=842)
     
+    # صفحة الغلاف
+    cover = doc.new_page(width=792, height=612)  # Landscape
     cover_lines = [
-        ("UNIVERSITY OF KERBALA", 18, 140, (0.1, 0.2, 0.4)),
-        ("COLLEGE OF ENGINEERING - PETROLEUM DEPT.", 14, 170, (0.2, 0.3, 0.5)),
-        ("LABORATORY TECHNICAL REPORT", 22, 380, (0.05, 0.15, 0.35)),
-        (f"Subject: {report_title[:50]}", 14, 430, (0.2, 0.2, 0.2)),
-        ("Academic Year: 2026", 12, 720, (0.4, 0.4, 0.4))
+        ("UNIVERSITY OF KERBALA - COLLEGE OF ENGINEERING", 18, 160, (0.1, 0.2, 0.5)),
+        ("DEPARTMENT OF PETROLEUM ENGINEERING", 15, 200, (0.2, 0.3, 0.6)),
+        (f"Presentation Document: {filename[:45]}", 22, 320, (0.05, 0.15, 0.35)),
+        ("Converted with Full Layout Formatting", 13, 370, (0.3, 0.3, 0.3)),
+        ("Academic Year: 2026", 12, 540, (0.4, 0.4, 0.4))
     ]
     for txt, sz, y, col in cover_lines:
         t_len = fitz.get_text_length(txt, fontname="helv", fontsize=sz)
-        cover.insert_text(fitz.Point((595 - t_len)/2, y), txt, fontname="helv", fontsize=sz, color=col)
+        cover.insert_text(fitz.Point((792 - t_len)/2, y), txt, fontname="helv", fontsize=sz, color=col)
 
-    lines = report_text.split("\n")
+    # الشرائح
+    for idx, slide in enumerate(prs.slides):
+        page = doc.new_page(width=792, height=612)
+        
+        # إطار وتصميم الشريحة
+        rect = fitz.Rect(30, 30, 762, 582)
+        page.draw_rect(rect, color=(0.15, 0.25, 0.55), width=1.5)
+        
+        header_text = f"Slide {idx + 1}"
+        page.insert_text(fitz.Point(45, 60), header_text, fontname="helv", fontsize=14, color=(0.15, 0.25, 0.55))
+        
+        y_cursor = 100
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                lines = shape.text.strip().split("\n")
+                for line in lines:
+                    if y_cursor > 550: break
+                    clean_line = line.strip()
+                    if not clean_line: continue
+                    
+                    is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_line)
+                    if is_ar:
+                        t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(clean_line)), fontsize=10)
+                        safe_insert_arabic(page, fitz.Point(740 - t_len, y_cursor), clean_line, fontsize=10, color=(0.1, 0.1, 0.1))
+                    else:
+                        page.insert_text(fitz.Point(50, y_cursor), f"• {clean_line[:110]}", fontname="helv", fontsize=10, color=(0.15, 0.15, 0.15))
+                    y_cursor += 18
+                y_cursor += 8
+
+    out = io.BytesIO()
+    doc.save(out)
+    doc.close()
+    out.seek(0)
+    return out
+
+# --- إنشاء تقرير مختبر أكاديمي متعدد الصفحات مع معلومات الطالب ---
+def generate_full_academic_report(metadata: dict, report_content: str) -> io.BytesIO:
+    doc = fitz.open()
+    
+    # 1. صفحة الغلاف الأكاديمية الرسمية
+    cover = doc.new_page(width=595, height=842)
+    border_rect = fitz.Rect(30, 30, 565, 812)
+    cover.draw_rect(border_rect, color=(0.1, 0.2, 0.45), width=2)
+    
+    headers = [
+        ("جامعة كربلاء - كلية الهندسة", 18, 100),
+        (f"قسم {metadata.get('dept', 'هندسة النفط')}", 15, 130),
+        ("تقرير مختبري أكاديمي معتمد", 22, 280),
+        (f"عنوان التجربة: {metadata.get('lab_title', '')[:50]}", 14, 330)
+    ]
+    for txt, sz, y in headers:
+        t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(txt)), fontsize=sz)
+        safe_insert_arabic(cover, fitz.Point((595 - t_len)/2, y), txt, fontsize=sz, color=(0.08, 0.18, 0.4))
+        
+    student_info = [
+        f"اسم الطالب: {metadata.get('name', '---')}",
+        f"القسم: {metadata.get('dept', 'هندسة النفط')}",
+        f"المرحلة الدراسية: {metadata.get('stage', '---')}",
+        f"نوع الدراسة: {metadata.get('study_type', '---')}",
+        "العام الدراسي: 2026"
+    ]
+    y_info = 500
+    for info in student_info:
+        safe_insert_arabic(cover, fitz.Point(360, y_info), info, fontsize=12, color=(0.15, 0.15, 0.15))
+        y_info += 28
+
+    # 2. صفحات التقرير المتعددة مع الترويسة والترقيم
+    paragraphs = report_content.split("\n")
     page = doc.new_page(width=595, height=842)
-    y = 60
-    for line in lines:
-        if y > 780:
-            page = doc.new_page(width=595, height=842)
-            y = 60
-            
-        line_clean = line.strip()
-        if not line_clean:
+    page_num = 1
+    y = 70
+
+    def draw_header_footer(pg, p_num):
+        pg.draw_line(fitz.Point(40, 45), fitz.Point(555, 45), color=(0.7, 0.7, 0.7), width=0.8)
+        pg.insert_text(fitz.Point(45, 40), "Petroleum Engineering Dept - University of Kerbala", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
+        pg.draw_line(fitz.Point(40, 800), fitz.Point(555, 800), color=(0.7, 0.7, 0.7), width=0.8)
+        pg.insert_text(fitz.Point(280, 815), f"Page {p_num}", fontname="helv", fontsize=9, color=(0.3, 0.3, 0.3))
+
+    draw_header_footer(page, page_num)
+
+    for p in paragraphs:
+        clean_p = p.strip()
+        if not clean_p:
             y += 12
             continue
+            
+        if y > 760:
+            page = doc.new_page(width=595, height=842)
+            page_num += 1
+            draw_header_footer(page, page_num)
+            y = 70
 
-        is_arabic = any('\u0600' <= char <= '\u06FF' for char in line_clean)
-        if is_arabic:
-            t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(line_clean)), fontsize=10)
-            safe_insert_arabic(page, fitz.Point(545 - t_len, y), line_clean, fontsize=10, color=(0.1, 0.1, 0.1))
-        else:
-            page.insert_text(fitz.Point(50, y), line_clean, fontname="helv", fontsize=10, color=(0.1, 0.1, 0.1))
-        y += 15
+        # تمييز العناوين الرئيسية
+        is_heading = any(clean_p.startswith(h) for h in ["1.", "2.", "3.", "4.", "5.", "#", "Objective", "Theory", "Procedure", "Discussion", "Conclusion"])
+        font_sz = 12 if is_heading else 9.5
+        font_col = (0.05, 0.15, 0.4) if is_heading else (0.12, 0.12, 0.12)
+        
+        is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_p)
+        wrapped = split_text_to_fit(clean_p, max_length=75 if is_heading else 85)
+        
+        for w_line in wrapped:
+            if y > 760:
+                page = doc.new_page(width=595, height=842)
+                page_num += 1
+                draw_header_footer(page, page_num)
+                y = 70
+                
+            if is_ar:
+                t_len = fitz.get_text_length(get_display(arabic_reshaper.reshape(w_line)), fontsize=font_sz)
+                safe_insert_arabic(page, fitz.Point(550 - t_len, y), w_line, fontsize=font_sz, color=font_col)
+            else:
+                page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
+            y += (font_sz + 4)
+            
+        y += 4
 
     out = io.BytesIO()
     doc.save(out)
@@ -376,7 +485,7 @@ async def cb_about(callback: types.CallbackQuery, state: FSMContext):
     text = (
         "ℹ **حول المنصة الأكاديمية:**\n\n"
         "منصة تخصصية مخصصة لطلبة قسم هندسة النفط - جامعة كربلاء.\n"
-        "تدعم ترجمة وتلخيص المناهج، تفكيك وتفسير المعادلات الرياضية، صياغة تقارير المختبر الرسمية، واستخراج وتحويل ملفات PowerPoint و Word."
+        "تدعم ترجمة وتلخيص المناهج، صياغة تقارير المختبر الرسمية متعددة الصفحات، محاكاة وتفسير المعادلات والرموز، وتحويل ملفات PowerPoint إلى صيغة PDF مباشرة."
     )
     await callback.message.edit_text(text, reply_markup=get_main_menu(callback.from_user.id))
     await callback.answer()
@@ -408,65 +517,93 @@ async def handle_admin(event: types.Message | types.CallbackQuery):
     else:
         await event.answer(text)
 
-# --- مفسر المعادلات والرموز الرياضية مع عداد حي ---
-@dp.callback_query(F.data == "cmd_formula")
-async def cb_formula(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "📐 **مفسر المعادلات والرموز الرياضية والهندسية:**\n\n"
-        "أرسل اسم المعادلة أو الرموز الرياضية (مثال: `Darcy's Law` أو `P = rho * g * h` أو `ΔP`):\n"
-        "سيتم توضيح دلالة كل رمز، وحدات القياس، والتطبيقات الميدانية بدقة."
-    )
-    await state.set_state(AppStates.waiting_for_formula)
+# --- محرك البحث في الأرشيف باختيار اللغة ---
+@dp.callback_query(F.data == "cmd_search_menu")
+async def cb_search_menu(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("🔍 **اختر لغة البحث في الأرشيف الأكاديمي:**", reply_markup=get_search_lang_menu())
     await callback.answer()
 
-@dp.message(AppStates.waiting_for_formula)
-async def process_formula(message: types.Message, state: FSMContext):
-    form = message.text.strip()
-    status_msg = await message.answer("⏳ **جاري تحليل وتفكيك المعادلة...**")
+@dp.callback_query(F.data.in_(["search_ar", "search_en"]))
+async def cb_search_by_lang(callback: types.CallbackQuery, state: FSMContext):
+    lang = "ar" if callback.data == "search_ar" else "en"
+    await state.update_data(search_lang=lang)
+    msg = "🔍 اكتب الآن اسم المادة أو الكلمة الدلالية بالعربية:" if lang == "ar" else "🔍 Type the subject name or keyword in English:"
+    await callback.message.edit_text(msg)
+    await state.set_state(AppStates.waiting_for_search_query)
+    await callback.answer()
+
+@dp.message(AppStates.waiting_for_search_query)
+async def process_search(message: types.Message, state: FSMContext):
+    query = message.text.strip().lower()
+    cursor.execute("SELECT id, file_name, file_id, rating_sum, rating_count FROM files WHERE keyword LIKE ?", (f"%{query}%",))
+    rows = cursor.fetchall()
     
-    stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري تحليل وتفكيك المعادلة والرموز", stop_event))
-    
-    prompt = f"اشرح المعادلة والرموز الرياضية التالية بالتفصيل: '{form}'. وضح كل رمز، والوحدات الحقلية والمخبرية، وتطبيقاتها في هندسة النفط."
-    res = await ai_request(prompt)
-    
-    stop_event.set()
-    counter_task.cancel()
-    
-    await status_msg.delete()
-    await send_long_message(message, f"📐 **تفسير القانون والرموز الرياضية:**\n\n{res}")
-    await message.answer("العودة للقائمة الرئيسية:", reply_markup=get_main_menu(message.from_user.id))
+    if not rows:
+        await message.answer("❌ لم يتم العثور على ملازم تطابق هذا البحث.", reply_markup=get_main_menu(message.from_user.id))
+    else:
+        await message.answer(f"✅ تم العثور على {len(rows)} ملف:")
+        for row in rows[:4]:
+            f_id, name, telegram_fid, r_sum, r_cnt = row
+            avg_rate = round(r_sum / max(1, r_cnt), 1)
+            caption = f"📁 **{name}**\n⭐ التقييم الأكاديمي: {avg_rate}/5"
+            await message.answer_document(telegram_fid, caption=caption)
+        await message.answer("العودة للقائمة الرئيسية:", reply_markup=get_main_menu(message.from_user.id))
     await state.clear()
 
-# --- منشئ تقارير المختبر مع عداد حي ---
+# --- إنشاء تقرير المختبر مع معلومات الطالب ---
 @dp.callback_query(F.data == "cmd_lab")
-async def cb_lab(callback: types.CallbackQuery, state: FSMContext):
-    text = (
-        "📝 **إنشاء تقرير مختبر أكاديمي رسمي:**\n\n"
-        "أرسل اسم التجربة (مثلاً: `Core Porosity and Permeability Determination`) وأي بيانات أو حسابات متوفرة لديك.\n"
-        "سيقوم البوت بصياغة تقرير متكامل وفق القوالب الجامعية الرسمية (Introduction, Theory, Procedure, Discussion, Conclusion)."
-    )
-    await callback.message.edit_text(text)
-    await state.set_state(AppStates.waiting_for_lab_data)
+async def cb_lab_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📝 **صياغة تقرير مختبر أكاديمي رسمي:**\n\nيرجى كتابة **اسم الطالب الثلاثي**:")
+    await state.set_state(AppStates.waiting_for_lab_student_name)
     await callback.answer()
+
+@dp.message(AppStates.waiting_for_lab_student_name)
+async def process_student_name(message: types.Message, state: FSMContext):
+    await state.update_data(student_name=message.text.strip())
+    await message.answer("🏛 يرجى كتابة **اسم القسم** (مثال: هندسة النفط):")
+    await state.set_state(AppStates.waiting_for_lab_dept)
+
+@dp.message(AppStates.waiting_for_lab_dept)
+async def process_student_dept(message: types.Message, state: FSMContext):
+    await state.update_data(dept=message.text.strip())
+    await message.answer("📚 يرجى إدخال **المرحلة الدراسية** (الأولى، الثانية، الثالثة، الرابعة):")
+    await state.set_state(AppStates.waiting_for_lab_stage)
+
+@dp.message(AppStates.waiting_for_lab_stage)
+async def process_student_stage(message: types.Message, state: FSMContext):
+    await state.update_data(stage=message.text.strip())
+    await message.answer("☀️ يرجى تحديد **نوع الدراسة** (صباحي / مسائي):")
+    await state.set_state(AppStates.waiting_for_lab_study_type)
+
+@dp.message(AppStates.waiting_for_lab_study_type)
+async def process_student_study_type(message: types.Message, state: FSMContext):
+    await state.update_data(study_type=message.text.strip())
+    await message.answer(
+        "🔬 أرسل الآن **اسم التجربة** وأي قراءات أو بيانات أو حسابات متوفرة لديك:\n"
+        "(مثال: `Viscosity and Density Measurement of Drilling Fluids`)"
+    )
+    await state.set_state(AppStates.waiting_for_lab_data)
 
 @dp.message(AppStates.waiting_for_lab_data)
 async def process_lab_input(message: types.Message, state: FSMContext):
     raw_data = message.text.strip()
-    status_msg = await message.answer("✍️ **جاري صياغة التقرير الهندسي وفق المعايير الأكاديمية...**")
+    status_msg = await message.answer("✍️ **جاري صياغة التقرير الهندسي الشامل...**")
     
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة التقرير الأكاديمي الشامل", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة تقرير أكاديمي مفصل متعدد الصفحات", stop_event))
     
     prompt = (
-        f"قم بصياغة تقرير مختبري جامعي احترافي متكامل للتجربة التالية: {raw_data}.\n"
-        "يجب أن يتضمن التقرير الأقسام التالية بوضوح:\n"
-        "1. Objectives\n"
-        "2. Theory & Equations (مع كتابة الرموز بوضوح)\n"
-        "3. Experimental Procedure\n"
-        "4. Results & Calculations Discussion\n"
-        "5. Conclusion & Recommendations\n"
-        "اجعل الأسلوب رسمياً وأكاديمياً باللغة الإنجليزية مع شروحات عربية ملحقة."
+        f"قم بصياغة تقرير مختبري جامعي رسمي مفصل باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
+        "يجب أن يكون التقرير شاملاً ومفصلاً جداً ليمتد على عدة صفحات، ويشمل:\n"
+        "1. Abstract & Introduction\n"
+        "2. Theoretical Background & Mathematical Equations (وضح كل رمز رياضي)\n"
+        "3. Apparatus & Materials Used\n"
+        "4. Step-by-Step Experimental Procedure\n"
+        "5. Experimental Data & Sample Calculations\n"
+        "6. In-Depth Results & Discussion\n"
+        "7. Conclusions & Recommendations\n"
+        "8. References\n"
+        "اكتب المحتوى بأسلوب أكاديمي رسمي متبع في كلية الهندسة."
     )
     report_content = await ai_request(prompt)
     
@@ -475,48 +612,55 @@ async def process_lab_input(message: types.Message, state: FSMContext):
     
     await state.update_data(lab_title=raw_data[:40], lab_report=report_content)
     await status_msg.delete()
-    await message.answer("✅ تم تجهيز مسودة التقرير! **اختر صيغة الملف التي ترغب بتحميله بها:**", reply_markup=get_report_formats())
+    await message.answer("✅ تم تجهيز التقرير الأكاديمي الشامل! **اختر صيغة التصدير المطلوبة:**", reply_markup=get_report_formats())
     await state.set_state(AppStates.waiting_for_lab_format)
 
 @dp.callback_query(AppStates.waiting_for_lab_format)
 async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    title = data.get("lab_title", "Lab_Report")
+    metadata = {
+        'name': data.get('student_name', '---'),
+        'dept': data.get('dept', 'هندسة النفط'),
+        'stage': data.get('stage', '---'),
+        'study_type': data.get('study_type', '---'),
+        'lab_title': data.get('lab_title', 'Lab Report')
+    }
     content = data.get("lab_report", "")
     fmt = callback.data
     
-    status_msg = await callback.message.answer("⏳ **جاري إنشاء وتنسيق المستند المختار...**")
+    status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والمعلومات...**")
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري تجهيز وتنسيق ملف التقرير", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات التقرير", stop_event))
     
     if fmt == "fmt_pdf":
-        pdf_io = generate_pdf_report(title, content)
-        doc_file = BufferedInputFile(pdf_io.getvalue(), filename=f"Report_{title}.pdf")
+        pdf_io = generate_full_academic_report(metadata, content)
+        doc_file = BufferedInputFile(pdf_io.getvalue(), filename=f"Report_{metadata['lab_title']}.pdf")
         stop_event.set()
         counter_task.cancel()
         await status_msg.delete()
-        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية!")
+        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية متعددة الصفحات!")
     elif fmt == "fmt_docx":
         doc_io = io.BytesIO()
         if DocxDocument:
             doc = DocxDocument()
-            doc.add_heading(f"Lab Report: {title}", 0)
+            doc.add_heading(f"Report: {metadata['lab_title']}", 0)
+            doc.add_paragraph(f"Student Name: {metadata['name']}\nDepartment: {metadata['dept']}\nStage: {metadata['stage']} - {metadata['study_type']}")
             doc.add_paragraph(content)
             doc.save(doc_io)
             doc_io.seek(0)
-            doc_file = BufferedInputFile(doc_io.getvalue(), filename=f"Report_{title}.docx")
+            doc_file = BufferedInputFile(doc_io.getvalue(), filename=f"Report_{metadata['lab_title']}.docx")
             stop_event.set()
             counter_task.cancel()
             await status_msg.delete()
-            await callback.message.answer_document(doc_file, caption="📝 تم إنشاء المستند بصيغة Word بنجاح.")
+            await callback.message.answer_document(doc_file, caption="📝 تم إنشاء المستند بصيغة Word الرسمية.")
         else:
-            txt_file = BufferedInputFile(content.encode("utf-8"), filename=f"Report_{title}.txt")
+            txt_file = BufferedInputFile(content.encode("utf-8"), filename=f"Report_{metadata['lab_title']}.txt")
             stop_event.set()
             counter_task.cancel()
             await status_msg.delete()
             await callback.message.answer_document(txt_file, caption="📄 التقرير بصيغة نصية.")
     else:
-        txt_file = BufferedInputFile(content.encode("utf-8"), filename=f"Report_{title}.txt")
+        txt_file = BufferedInputFile(content.encode("utf-8"), filename=f"Report_{metadata['lab_title']}.txt")
         stop_event.set()
         counter_task.cancel()
         await status_msg.delete()
@@ -526,11 +670,12 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
+# --- تحويل مستندات PowerPoint واستقبال الملفات ---
 @dp.callback_query(F.data == "cmd_convert")
-async def cb_convert(callback: types.CallbackQuery):
+async def cb_convert_prompt(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "🔄 **خدمة تغيير واستخراج صيغ المستندات:**\n\n"
-        "أرسل أي ملف (PowerPoint .pptx, Word .docx, PDF) للدردشة الآن وسأقوم باستخراج كامل النصوص منه أو إعادة حفظه كملف نصي أو وورد.",
+        "🔄 **تحويل العروض التقديمية (PowerPoint) إلى PDF:**\n\n"
+        "أرسل الآن ملف PowerPoint (.pptx) في المحادثة وسيقوم البوت بتحويله إلى مستند PDF مع الحفاظ على التنسيقات والشرائح.",
         reply_markup=get_main_menu(callback.from_user.id)
     )
     await callback.answer()
@@ -540,40 +685,37 @@ async def handle_incoming_documents(message: types.Message, state: FSMContext):
     doc_name = message.document.file_name.lower()
     file_id = message.document.file_id
     
+    # تحويل ملف البوربوينت مباشرة إلى PDF
     if doc_name.endswith(".pptx") or doc_name.endswith(".ppt"):
-        status_msg = await message.answer("📊 **تم استلام ملف عرض تقديمي (PowerPoint)...**\n\nجاري قراءة الشرائح واستخراج المحتوى...")
+        status_msg = await message.answer("📊 **تم استلام ملف PowerPoint... جاري التحويل والتنسيق إلى PDF...**")
         stop_event = asyncio.Event()
-        counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري فك وقراءة شرائح البوربوينت", stop_event))
+        counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري تحويل شرائح البوربوينت إلى PDF", stop_event))
         try:
             file = await bot.get_file(file_id)
             io_file = io.BytesIO()
             await bot.download_file(file.file_path, destination=io_file)
             
-            extracted_text = ""
             if Presentation and doc_name.endswith(".pptx"):
-                prs = Presentation(io_file)
-                for idx, slide in enumerate(prs.slides):
-                    extracted_text += f"\n--- Slide {idx+1} ---\n"
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text") and shape.text.strip():
-                            extracted_text += shape.text.strip() + "\n"
+                pdf_io = convert_pptx_to_formatted_pdf(io_file, message.document.file_name)
+                out_file = BufferedInputFile(pdf_io.getvalue(), filename=f"Converted_{message.document.file_name}.pdf")
+                stop_event.set()
+                counter_task.cancel()
+                await status_msg.delete()
+                await message.answer_document(
+                    out_file, 
+                    caption="✅ تم تحويل ملف البوربوينت بنجاح إلى مستند PDF منسق بالكامل!",
+                    reply_markup=get_main_menu(message.from_user.id)
+                )
             else:
-                extracted_text = "تم استلام ملف العرض التقديمي."
-                
-            txt_file = BufferedInputFile(extracted_text.encode("utf-8"), filename=f"Extracted_{doc_name}.txt")
-            stop_event.set()
-            counter_task.cancel()
-            await status_msg.delete()
-            await message.answer_document(
-                txt_file, 
-                caption="✅ تم تفريغ نصوص البوربوينت بالكامل! يمكنك الآن نسخها وترجمتها بسهولة.",
-                reply_markup=get_main_menu(message.from_user.id)
-            )
+                stop_event.set()
+                counter_task.cancel()
+                await status_msg.delete()
+                await message.answer("⚠️ يرجى إرسال ملف بصيغة PPTX الحديثة.")
         except Exception as e:
             stop_event.set()
             counter_task.cancel()
             logging.error(f"PPTX error: {e}")
-            await message.answer("❌ تعذر استخراج المحتوى من ملف البوربوينت.")
+            await message.answer(f"❌ تعذر تحويل ملف البوربوينت: {e}")
         return
 
     if doc_name.endswith(".pdf"):
@@ -582,7 +724,7 @@ async def handle_incoming_documents(message: types.Message, state: FSMContext):
         await state.set_state(AppStates.waiting_for_action)
         return
 
-    await message.answer("📁 تم استلام الملف. تدعم المنصة معالجة ملفات PDF، PowerPoint، و Word.", reply_markup=get_main_menu(message.from_user.id))
+    await message.answer("📁 تم استلام الملف. تدعم المنصة معالجة ملفات PDF و PowerPoint.", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.callback_query(AppStates.waiting_for_action)
 async def process_pdf_action(callback: types.CallbackQuery, state: FSMContext):
@@ -693,6 +835,7 @@ async def run_translation(message: types.Message, state: FSMContext):
     finally:
         await state.clear()
 
+# --- باقي الأوامر والخدمات ---
 @dp.callback_query(F.data == "cmd_dict")
 async def cb_dict(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("📖 **قاموس هندسة النفط:**\n\nأرسل الآن المصطلح الهندسي للبحث عن تعريفه واستخداماته:")
@@ -716,37 +859,32 @@ async def process_dict(message: types.Message, state: FSMContext):
     await message.answer("الرجوع للقائمة:", reply_markup=get_main_menu(message.from_user.id))
     await state.clear()
 
-@dp.callback_query(F.data == "cmd_search")
-async def cb_search(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🔍 **البحث في الأرشيف الجامعي:**\n\nاكتب اسم المادة أو جزء من اسم الملزمة:")
-    await state.set_state(AppStates.waiting_for_search_query)
+@dp.callback_query(F.data == "cmd_formula")
+async def cb_formula(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📐 **مفسر المعادلات والرموز:**\n\nأرسل المعادلة الرياضية أو القانون لشرح دلالة الرموز وتطبيقاتها:")
+    await state.set_state(AppStates.waiting_for_formula)
     await callback.answer()
 
-@dp.message(AppStates.waiting_for_search_query)
-async def process_search(message: types.Message, state: FSMContext):
-    query = message.text.strip().lower()
-    cursor.execute("SELECT id, file_name, file_id, rating_sum, rating_count FROM files WHERE keyword LIKE ?", (f"%{query}%",))
-    rows = cursor.fetchall()
+@dp.message(AppStates.waiting_for_formula)
+async def process_formula(message: types.Message, state: FSMContext):
+    form = message.text.strip()
+    status_msg = await message.answer("🔍 **جاري تحليل وتفكيك المعادلة...**")
+    stop_event = asyncio.Event()
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري تحليل الرموز والمعادلات", stop_event))
     
-    if not rows:
-        await message.answer("❌ لم يتم العثور على ملازم تطابق هذا الاسم.", reply_markup=get_main_menu(message.from_user.id))
-    else:
-        await message.answer(f"✅ تم العثور على {len(rows)} ملف:")
-        for row in rows[:4]:
-            f_id, name, telegram_fid, r_sum, r_cnt = row
-            avg_rate = round(r_sum / max(1, r_cnt), 1)
-            caption = f"📁 **{name}**\n⭐ التقييم الأكاديمي: {avg_rate}/5"
-            await message.answer_document(telegram_fid, caption=caption)
-        await message.answer("العودة للقائمة الرئيسية:", reply_markup=get_main_menu(message.from_user.id))
+    prompt = f"اشرح المعادلة والرموز الرياضية التالية بالتفصيل: '{form}'. وضح كل رمز، والوحدات الحقلية والمخبرية، وتطبيقاتها في هندسة النفط."
+    res = await ai_request(prompt)
+    
+    stop_event.set()
+    counter_task.cancel()
+    await status_msg.delete()
+    await send_long_message(message, f"📐 **تفسير القانون والرموز:**\n\n{res}")
+    await message.answer("القائمة الرئيسية:", reply_markup=get_main_menu(message.from_user.id))
     await state.clear()
 
 @dp.callback_query(F.data == "cmd_calc")
 async def cb_calc(callback: types.CallbackQuery, state: FSMContext):
-    text = (
-        "🧮 **حاسبة هندسة النفط ومحول الوحدات:**\n\n"
-        "أرسل المعطيات أو مسألة التحويل وسيقوم البوت بحلها خطوة بخطوة بالوحدات الهندسية الدقيقة.\n"
-        "اكتب مسألتك الآن بالتفصيل:"
-    )
+    text = "🧮 **حاسبة ومحول وحدات النفط:**\n\nأرسل مسألتك أو التحويل المطلوب لحسابها خطوة بخطوة بالوحدات الهندسية:"
     await callback.message.edit_text(text)
     await state.set_state(AppStates.waiting_for_calc_input)
     await callback.answer()
@@ -754,9 +892,9 @@ async def cb_calc(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(AppStates.waiting_for_calc_input)
 async def process_calc(message: types.Message, state: FSMContext):
     q = message.text.strip()
-    status_msg = await message.answer("⚙️ **جاري الحساب وتطبيق القوانين...**")
+    status_msg = await message.answer("⚙️ **جاري الحساب...**")
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري حل المسألة الرياضية وحساب الوحدات", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري الحساب وتطبيق القوانين", stop_event))
     
     prompt = f"حل هذه المسألة الهندسية النفطية بخطوات رياضية واضحة واذكر القوانين والوحدات الصحيحة:\n\n{q}"
     res = await ai_request(prompt)
@@ -764,7 +902,7 @@ async def process_calc(message: types.Message, state: FSMContext):
     stop_event.set()
     counter_task.cancel()
     await status_msg.delete()
-    await send_long_message(message, f"🧮 **خطوات الحل والناتج:**\n\n{res}")
+    await send_long_message(message, f"🧮 **الناتج والحل:**\n\n{res}")
     await message.answer("القائمة الرئيسية:", reply_markup=get_main_menu(message.from_user.id))
     await state.clear()
 
@@ -777,8 +915,7 @@ async def cb_schedule(callback: types.CallbackQuery):
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: types.Message):
-    if not is_admin(message.from_user.id):
-        return
+    if not is_admin(message.from_user.id): return
     broadcast_msg = message.text.replace("/broadcast", "").strip()
     if not broadcast_msg:
         await message.answer("⚠️ اكتب نص الإذاعة بعد الأمر.")
@@ -797,8 +934,7 @@ async def cmd_broadcast(message: types.Message):
 
 @dp.message(Command("set_schedule"))
 async def cmd_set_schedule(message: types.Message):
-    if not is_admin(message.from_user.id):
-        return
+    if not is_admin(message.from_user.id): return
     new_schedule = message.text.replace("/set_schedule", "").strip()
     if not new_schedule:
         await message.answer("⚠️ اكتب محتوى الجدول بعد الأمر.")
@@ -808,7 +944,7 @@ async def cmd_set_schedule(message: types.Message):
     await message.answer("✅ تم تحديث الجدول الدراسي بنجاح.")
 
 # ==========================================
-# خادم الويب وتنظيف اتصالات التليجرام
+# خادم الويب
 # ==========================================
 async def handle_ping(request):
     return web.Response(text="Academic Bot Platform is Live!")
@@ -825,7 +961,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية الشاملة تعمل الآن مع العداد التفاعلي الحي...")
+    logging.info("🚀 المنصة الأكاديمية تعمل مع تحويل PowerPoint وتقارير المختبر الكاملة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
