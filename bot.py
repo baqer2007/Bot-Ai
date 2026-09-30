@@ -17,7 +17,8 @@ from bidi.algorithm import get_display
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+# يجلب المفتاح الذي وضعته في Render (سواء أبقيت اسمه القديم أو غيرته)
+API_KEY = os.environ.get("OPENROUTER_API_KEY", os.environ.get("GITHUB_TOKEN", ""))
 
 FONT_PATH = "Amiri-Regular.ttf"
 if not os.path.exists(FONT_PATH):
@@ -27,16 +28,16 @@ if not os.path.exists(FONT_PATH):
     except Exception as e:
         logging.error(f"Font download error: {e}")
 
+# التغيير الجوهري هنا: توجيه البوت إلى سيرفرات GitHub (Azure) بدلاً من OpenRouter
 client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY.strip(),
-    timeout=40.0
+    base_url="https://models.inference.ai.azure.com",
+    api_key=API_KEY.strip(),
+    timeout=60.0
 )
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# --- واجهة الأزرار الشفافة ---
 def get_main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -71,11 +72,10 @@ async def cb_about(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "settings")
 async def cb_settings(callback: types.CallbackQuery):
-    text = "⚙️ **الإعدادات:**\n\n🔹 **حجم الخط العربي:** 7.5 (متوسط ومناسب)\n🔹 **لون الترجمة:** أحمر غامق\n🔹 **الوضع:** ذكي (يتجاوز الأرقام للسرعة)\n\n*(التعديل اليدوي للإعدادات سيتاح قريباً)*"
+    text = "⚙️ **الإعدادات:**\n\n🔹 **النموذج:** GPT-4o-Mini (سريع جداً)\n🔹 **حجم الخط العربي:** 7.5\n🔹 **الوضع:** ذكي (يتجاوز الأرقام للسرعة)\n\n*(الخدمة مدعومة عبر GitHub Students)*"
     await callback.message.edit_text(text, reply_markup=get_main_menu())
     await callback.answer()
 
-# --- دوال الترجمة ومعالجة الـ PDF ---
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text:
         return []
@@ -85,8 +85,9 @@ async def translate_blocks(blocks_text: list) -> list:
         prompt += f"{i}|| {text}\n"
 
     try:
+        # استخدام نموذج gpt-4o-mini المتاح مجاناً للطلاب في GitHub
         response = await client.chat.completions.create(
-            model="openrouter/free",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
@@ -113,7 +114,6 @@ async def translate_blocks(blocks_text: list) -> list:
         return ["" for _ in blocks_text]
 
 def split_text_to_fit(text, max_length=95):
-    """تقسيم النص لأسطر لتجنب التضارب والخروج عن الصفحة"""
     words = text.split()
     lines = []
     current_line = ""
@@ -147,7 +147,6 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
         for b in blocks:
             if b[6] == 0:
                 txt = b[4].strip()
-                # فلترة معدلة: تقبل الكلمات التي طولها 5 أحرف فأكثر (لالتقاط العناوين القصيرة) وتحتوي على حروف
                 if len(txt) > 5 and re.search('[a-zA-Z]{3,}', txt):
                     text_blocks.append(txt.replace("\n", " "))
                     valid_coords.append((b[0], b[1], b[2], b[3]))
@@ -168,7 +167,6 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
             try:
                 wrapped_lines = split_text_to_fit(ar_text)
                 x0, y0, x1, y1 = coord
-                # تقليل مسافة النزول لتصبح 8 فقط لمنع التضارب مع السطر التالي
                 y_offset = y1 + 8 
                 
                 for line in wrapped_lines:
@@ -182,14 +180,13 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                             insert_point,
                             bidi_text,
                             fontname=font_to_use,
-                            fontsize=7.5, # خط أصغر ومتناسق
+                            fontsize=7.5,
                             color=(0.7, 0.1, 0.1),
                             rotate=0
                         )
                     except Exception as e:
                         logging.error(f"Error inserting text: {e}")
                     
-                    # مسافة الأسطر الملتفة أصغر
                     y_offset += 10 
 
             except Exception as e:
@@ -210,7 +207,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر، يرجى الانتظار ⏳")
+    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة بواسطة ذكاء اصطناعي متطور ⏳")
 
     try:
         pdf_io = io.BytesIO()
@@ -225,7 +222,7 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تمت الترجمة والتنسيق بنجاح! احتفظ بهذا الملف.",
+            caption="✅ تمت الترجمة والتنسيق بنجاح!",
             reply_markup=get_main_menu()
         )
 
@@ -236,7 +233,6 @@ async def handle_pdf(message: types.Message):
         except TelegramBadRequest:
             await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
 
-# --- السيرفر الوهمي لمنصة Render ---
 async def handle_ping(request):
     return web.Response(text="Bot is running alive!")
 
@@ -252,7 +248,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بكامل الميزات...")
+    logging.info("🚀 البوت يعمل الآن بكامل الميزات وبدون حدود...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
