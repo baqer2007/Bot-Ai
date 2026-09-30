@@ -34,7 +34,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-ADMIN_USER_IDS = [832023205, 832023272, 832023243, 832023294, 832023401]
+ADMIN_USER_IDS = [832023205, 832023272, 832023243, 832023294, 832023401, 832023416]
 
 KEYS_STRING = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_API_KEY", ""))
 API_KEYS = [k.strip() for k in KEYS_STRING.split(",") if k.strip()]
@@ -269,9 +269,9 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         bidi_text = format_arabic(text)
         t_len = get_font_length(bidi_text, fontsize=size)
         x = (595 - t_len) / 2
-        page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45), encoding=fitz.TEXT_ENCODING_UNICODE)
+        page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF مع الحفاظ على الخط العربي ---
+# --- معالجة وترجمة الـ PDF دون أي استدعاء لوسائط ملغاة ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
@@ -317,7 +317,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         
         wm_txt = format_arabic("قسم هندسة النفط - جامعة كربلاء")
         t_len = get_font_length(wm_txt, fontsize=9)
-        new_page.insert_text(fitz.Point((595 - t_len) / 2, 820), wm_txt, fontfile=FONT_PATH, fontsize=9, color=(0.6, 0.6, 0.6), encoding=fitz.TEXT_ENCODING_UNICODE)
+        new_page.insert_text(fitz.Point((595 - t_len) / 2, 820), wm_txt, fontfile=FONT_PATH, fontsize=9, color=(0.6, 0.6, 0.6))
 
         y = 65
         t_idx = 0
@@ -334,7 +334,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
                     y += 13
 
-                # طباعة النص العربي داخل صندوق أزرق شفاف
+                # طباعة النص العربي داخل الصندوق الأزرق الشفاف
                 if t_idx < len(translations) and translations[t_idx]:
                     ar_raw = translations[t_idx].strip()
                     if ar_raw and ar_raw != txt:
@@ -345,7 +345,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                             new_page = out_doc.new_page(width=595, height=842)
                             y = 65
                             
-                        # رسم صندوق التظليل
                         box_rect = fitz.Rect(45, y - 2, 545, y + box_height - 2)
                         new_page.draw_rect(box_rect, color=(0.82, 0.88, 0.96), fill=(0.94, 0.97, 1.0))
                         new_page.draw_line(fitz.Point(545, y - 2), fitz.Point(545, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
@@ -355,7 +354,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                             bidi_line = format_arabic(a_l)
                             line_len = get_font_length(bidi_line, fontsize=8.5)
                             x_target = max(55, 535 - line_len)
-                            new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontfile=FONT_PATH, fontsize=8.5, color=(0.08, 0.22, 0.58), encoding=fitz.TEXT_ENCODING_UNICODE)
+                            new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontfile=FONT_PATH, fontsize=8.5, color=(0.08, 0.22, 0.58))
                             cur_y += 14
                             
                         y += (box_height + 4)
@@ -413,7 +412,7 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
                     if is_ar:
                         b_txt = format_arabic(clean_line)
                         t_len = get_font_length(b_txt, fontsize=9.5)
-                        page.insert_text(fitz.Point(740 - t_len, y_cursor), b_txt, fontfile=FONT_PATH, fontsize=9.5, color=(0.1, 0.1, 0.1), encoding=fitz.TEXT_ENCODING_UNICODE)
+                        page.insert_text(fitz.Point(740 - t_len, y_cursor), b_txt, fontfile=FONT_PATH, fontsize=9.5, color=(0.1, 0.1, 0.1))
                     else:
                         page.insert_text(fitz.Point(50, y_cursor), f"• {clean_line[:105]}", fontname="helv", fontsize=9.5, color=(0.15, 0.15, 0.15))
                     y_cursor += 16
@@ -458,7 +457,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     for txt, sz, y in headers:
         b_txt = format_arabic(txt)
         t_len = get_font_length(b_txt, fontsize=sz)
-        cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontfile=FONT_PATH, fontsize=sz, color=(0.08, 0.18, 0.4), encoding=fitz.TEXT_ENCODING_UNICODE)
+        cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontfile=FONT_PATH, fontsize=sz, color=(0.08, 0.18, 0.4))
         
     student_info = [
         f"اسم الطالب: {s_name}",
@@ -470,7 +469,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     y_info = 500
     for info in student_info:
         b_info = format_arabic(info)
-        cover.insert_text(fitz.Point(360, y_info), b_info, fontfile=FONT_PATH, fontsize=12, color=(0.15, 0.15, 0.15), encoding=fitz.TEXT_ENCODING_UNICODE)
+        cover.insert_text(fitz.Point(360, y_info), b_info, fontfile=FONT_PATH, fontsize=12, color=(0.15, 0.15, 0.15))
         y_info += 28
 
     def create_content_page(p_num):
@@ -536,7 +535,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
             if is_ar:
                 b_line = format_arabic(w_line)
                 t_len = get_font_length(b_line, fontsize=font_sz)
-                page.insert_text(fitz.Point(545 - t_len, y), b_line, fontfile=FONT_PATH, fontsize=font_sz, color=font_col, encoding=fitz.TEXT_ENCODING_UNICODE)
+                page.insert_text(fitz.Point(545 - t_len, y), b_line, fontfile=FONT_PATH, fontsize=font_sz, color=font_col)
             else:
                 page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
             y += (font_sz + 4)
