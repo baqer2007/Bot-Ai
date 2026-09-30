@@ -52,7 +52,7 @@ def ensure_font_downloaded():
             urllib.request.urlretrieve(FONT_URL, FONT_PATH)
             logging.info("Amiri font downloaded successfully.")
         except Exception as e:
-            logging.error(f"Failed to download font: {e}")
+            logging.error(f"فشل تحميل الخط: {e}")
 
 ensure_font_downloaded()
 
@@ -117,27 +117,19 @@ def clean_math_text(text: str) -> str:
         cleaned = re.sub(pattern, repl, cleaned)
     return cleaned
 
-def safe_draw_arabic(page: fitz.Page, point: fitz.Point, text: str, fontsize=8.5, color=(0.08, 0.22, 0.58)):
+def format_arabic(text: str) -> str:
+    """تشكيل وعكس النص العربي ليعرض بشكل طبيعي وسليم في PDF"""
+    if not text: return ""
     reshaped = arabic_reshaper.reshape(clean_math_text(text))
-    bidi_text = get_display(reshaped)
-    if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
-        try:
-            page.insert_text(point, bidi_text, fontfile=FONT_PATH, fontsize=fontsize, color=color)
-            return
-        except Exception:
-            pass
-    page.insert_text(point, bidi_text, fontname="helv", fontsize=fontsize, color=color)
+    return get_display(reshaped)
 
-def get_arabic_text_length(text: str, fontsize=8.5) -> float:
-    reshaped = arabic_reshaper.reshape(clean_math_text(text))
-    bidi_text = get_display(reshaped)
+def get_font_object():
     if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
         try:
-            font = fitz.Font(fontfile=FONT_PATH)
-            return font.text_length(bidi_text, fontsize=fontsize)
+            return fitz.Font(fontfile=FONT_PATH)
         except Exception:
             pass
-    return fitz.get_text_length(bidi_text, fontname="helv", fontsize=fontsize)
+    return fitz.Font("helv")
 
 async def run_live_counter(status_msg: types.Message, task_title: str, stop_event: asyncio.Event):
     start_time = time.time()
@@ -233,7 +225,7 @@ async def ai_request(prompt: str) -> str:
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
     prompt = (
-        "ترجم العبارات الهندسية والأكاديمية التالية إلى العربية بأسلوب علمي رصين ومختصر ومفهوم لطلاب كلية الهندسة.\n"
+        "ترجم العبارات الأكاديمية التالية إلى العربية بدقة علمية مخصصة لطلاب كلية الهندسة.\n"
         "حافظ على الرموز والمعادلات الرياضية. التزم بصيغة الترقيم بالضبط (رقم|| النص المترجم).\n\n"
     )
     for i, text in enumerate(blocks_text):
@@ -249,7 +241,7 @@ async def translate_blocks(blocks_text: list) -> list:
                 translated_results[int(num_str)] = clean_math_text(parts[1].strip())
     return translated_results
 
-def split_text_to_fit(text, max_length=65):
+def split_text_to_fit(text, max_length=80):
     words = text.split()
     lines, current_line = [], ""
     for word in words:
@@ -264,6 +256,7 @@ def split_text_to_fit(text, max_length=65):
 def add_academic_cover(doc: fitz.Document, filename: str):
     doc.insert_page(0, width=595, height=842)
     page = doc[0]
+    font_obj = get_font_object()
     
     border_rect = fitz.Rect(25, 25, 570, 817)
     page.draw_rect(border_rect, color=(0.1, 0.22, 0.45), width=2)
@@ -276,11 +269,12 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         ("إعداد وتطوير: دفعة هندسة النفط - جامعة كربلاء", 14, 730)
     ]
     for text, size, y in texts:
-        t_len = get_arabic_text_length(text, fontsize=size)
+        bidi_text = format_arabic(text)
+        t_len = font_obj.text_length(bidi_text, fontsize=size)
         x = (595 - t_len) / 2
-        safe_draw_arabic(page, fitz.Point(x, y), text, fontsize=size, color=(0.08, 0.2, 0.45))
+        page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF دون الحاجة لـ insert_font ---
+# --- معالجة وترجمة الـ PDF عبر صناديق TextBox الآمنة ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
@@ -290,6 +284,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
     
     total_pages = len(pages_to_keep)
     start_time = time.time()
+    font_obj = get_font_object()
 
     for idx, page_num in enumerate(pages_to_keep, 1):
         try:
@@ -319,13 +314,14 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         
         new_page = out_doc.new_page(width=595, height=842)
         
-        # ترويسة وتذييل الصفحة
+        # الترويسة والتذييل
         new_page.draw_line(fitz.Point(40, 40), fitz.Point(555, 40), color=(0.7, 0.7, 0.7), width=0.8)
         new_page.insert_text(fitz.Point(45, 35), f"Petroleum Engineering Dept | Page {idx}", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
         new_page.draw_line(fitz.Point(40, 805), fitz.Point(555, 805), color=(0.7, 0.7, 0.7), width=0.8)
-        wm_txt = "قسم هندسة النفط - جامعة كربلاء"
-        t_len = get_arabic_text_length(wm_txt, fontsize=9)
-        safe_draw_arabic(new_page, fitz.Point((595 - t_len) / 2, 820), wm_txt, fontsize=9, color=(0.6, 0.6, 0.6))
+        
+        wm_txt = format_arabic("قسم هندسة النفط - جامعة كربلاء")
+        t_len = font_obj.text_length(wm_txt, fontsize=9)
+        new_page.insert_text(fitz.Point((595 - t_len) / 2, 820), wm_txt, fontfile=FONT_PATH, fontsize=9, color=(0.6, 0.6, 0.6))
 
         y = 65
         t_idx = 0
@@ -334,37 +330,40 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 txt = clean_math_text(b[4].strip())
                 if not txt: continue
                 
-                # طباعة النص الإنجليزي الأصلي
+                # طباعة النص الإنجليزي
                 for en_line in split_text_to_fit(txt.replace("\n", " "), max_length=85):
-                    if y > 770:
+                    if y > 760:
                         new_page = out_doc.new_page(width=595, height=842)
                         y = 65
                     new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
-                    y += 12
+                    y += 13
 
-                # الصندوق الأزرق الشفاف للترجمة
+                # طباعة الترجمة العربية داخل صندوق TextBox آمن مع تظليل أزرق
                 if t_idx < len(translations) and translations[t_idx]:
-                    ar_txt = translations[t_idx].strip()
-                    if ar_txt and ar_txt != txt:
-                        y += 3
-                        ar_lines = split_text_to_fit(ar_txt, max_length=62)
+                    ar_raw = translations[t_idx].strip()
+                    if ar_raw and ar_raw != txt:
+                        ar_lines = split_text_to_fit(ar_raw, max_length=60)
                         box_height = len(ar_lines) * 14 + 10
                         
-                        if y + box_height > 770:
+                        if y + box_height > 760:
                             new_page = out_doc.new_page(width=595, height=842)
                             y = 65
                             
-                        box_rect = fitz.Rect(45, y - 2, 540, y + box_height - 2)
+                        # رسم صندوق التظليل الأزرق الشفاف
+                        box_rect = fitz.Rect(45, y - 2, 545, y + box_height - 2)
                         new_page.draw_rect(box_rect, color=(0.82, 0.88, 0.96), fill=(0.94, 0.97, 1.0))
-                        new_page.draw_line(fitz.Point(540, y - 2), fitz.Point(540, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
+                        new_page.draw_line(fitz.Point(545, y - 2), fitz.Point(545, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
                         
-                        y += 11
-                        for a_line in ar_lines:
-                            line_len = get_arabic_text_length(a_line, fontsize=8.5)
-                            x_target = max(55, 530 - line_len)
-                            safe_draw_arabic(new_page, fitz.Point(x_target, y), a_line, fontsize=8.5, color=(0.08, 0.22, 0.58))
-                            y += 14
-                        y += 4
+                        # إدراج كل سطر عربي بمكانه السليم داخل الصندوق
+                        cur_y = y + 10
+                        for a_l in ar_lines:
+                            bidi_line = format_arabic(a_l)
+                            line_len = font_obj.text_length(bidi_line, fontsize=8.5)
+                            x_target = 535 - line_len  # محاذاة من اليمين بمسافة أمان داخل الصندوق
+                            new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontfile=FONT_PATH, fontsize=8.5, color=(0.08, 0.22, 0.58))
+                            cur_y += 14
+                            
+                        y += (box_height + 4)
                     t_idx += 1
                 y += 6
         await asyncio.sleep(0.3)
@@ -376,10 +375,11 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
     output.seek(0)
     return output
 
-# --- تحويل PowerPoint التكراري إلى PDF ---
+# --- تحويل PowerPoint الشامل إلى PDF ---
 def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.BytesIO:
     prs = Presentation(pptx_io)
     doc = fitz.open()
+    font_obj = get_font_object()
     
     cover = doc.new_page(width=792, height=612)
     cover_lines = [
@@ -417,8 +417,9 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
                     if not clean_line or y_cursor > 550: continue
                     is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_line)
                     if is_ar:
-                        t_len = get_arabic_text_length(clean_line, fontsize=9.5)
-                        safe_draw_arabic(page, fitz.Point(740 - t_len, y_cursor), clean_line, fontsize=9.5, color=(0.1, 0.1, 0.1))
+                        b_txt = format_arabic(clean_line)
+                        t_len = font_obj.text_length(b_txt, fontsize=9.5)
+                        page.insert_text(fitz.Point(740 - t_len, y_cursor), b_txt, fontfile=FONT_PATH, fontsize=9.5, color=(0.1, 0.1, 0.1))
                     else:
                         page.insert_text(fitz.Point(50, y_cursor), f"• {clean_line[:105]}", fontname="helv", fontsize=9.5, color=(0.15, 0.15, 0.15))
                     y_cursor += 16
@@ -444,6 +445,7 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
 def generate_full_academic_report(metadata: dict, report_content: str) -> io.BytesIO:
     doc = fitz.open()
     cover = doc.new_page(width=595, height=842)
+    font_obj = get_font_object()
     
     border_rect = fitz.Rect(30, 30, 565, 812)
     cover.draw_rect(border_rect, color=(0.1, 0.2, 0.45), width=2)
@@ -461,8 +463,9 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
         (f"عنوان التجربة: {l_title[:50]}", 14, 340)
     ]
     for txt, sz, y in headers:
-        t_len = get_arabic_text_length(txt, fontsize=sz)
-        safe_draw_arabic(cover, fitz.Point((595 - t_len)/2, y), txt, fontsize=sz, color=(0.08, 0.18, 0.4))
+        b_txt = format_arabic(txt)
+        t_len = font_obj.text_length(b_txt, fontsize=sz)
+        cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontfile=FONT_PATH, fontsize=sz, color=(0.08, 0.18, 0.4))
         
     student_info = [
         f"اسم الطالب: {s_name}",
@@ -473,7 +476,8 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     ]
     y_info = 500
     for info in student_info:
-        safe_draw_arabic(cover, fitz.Point(360, y_info), info, fontsize=12, color=(0.15, 0.15, 0.15))
+        b_info = format_arabic(info)
+        cover.insert_text(fitz.Point(360, y_info), b_info, fontfile=FONT_PATH, fontsize=12, color=(0.15, 0.15, 0.15))
         y_info += 28
 
     def create_content_page(p_num):
@@ -537,8 +541,9 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 y = 70
                 
             if is_ar:
-                t_len = get_arabic_text_length(w_line, fontsize=font_sz)
-                safe_draw_arabic(page, fitz.Point(545 - t_len, y), w_line, fontsize=font_sz, color=font_col)
+                b_line = format_arabic(w_line)
+                t_len = font_obj.text_length(b_line, fontsize=font_sz)
+                page.insert_text(fitz.Point(545 - t_len, y), b_line, fontfile=FONT_PATH, fontsize=font_sz, color=font_col)
             else:
                 page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
             y += (font_sz + 4)
