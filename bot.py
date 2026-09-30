@@ -271,7 +271,7 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         x = (595 - t_len) / 2
         page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF دون أي استدعاء لوسائط ملغاة ---
+# --- معالجة وترجمة الـ PDF عبر صناديق TextBox الآمنة ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
@@ -334,7 +334,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
                     y += 13
 
-                # طباعة النص العربي داخل الصندوق الأزرق الشفاف
+                # طباعة النص العربي داخل صندوق أزرق شفاف
                 if t_idx < len(translations) and translations[t_idx]:
                     ar_raw = translations[t_idx].strip()
                     if ar_raw and ar_raw != txt:
@@ -345,6 +345,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                             new_page = out_doc.new_page(width=595, height=842)
                             y = 65
                             
+                        # رسم صندوق التظليل
                         box_rect = fitz.Rect(45, y - 2, 545, y + box_height - 2)
                         new_page.draw_rect(box_rect, color=(0.82, 0.88, 0.96), fill=(0.94, 0.97, 1.0))
                         new_page.draw_line(fitz.Point(545, y - 2), fitz.Point(545, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
