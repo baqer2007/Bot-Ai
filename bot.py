@@ -18,9 +18,9 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
 
-# جلب بيانات Cloudflare من إعدادات Render
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
+# قراءة جميع المفاتيح من Render
+KEYS_STRING = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_API_KEY", ""))
+API_KEYS = [k.strip() for k in KEYS_STRING.split(",") if k.strip()]
 
 FONT_PATH = "Amiri-Regular.ttf"
 if not os.path.exists(FONT_PATH):
@@ -30,12 +30,14 @@ if not os.path.exists(FONT_PATH):
     except Exception as e:
         logging.error(f"Font download error: {e}")
 
-# الاتصال المباشر بشبكة Cloudflare Edge
-client = AsyncOpenAI(
-    base_url=f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
-    api_key=CF_API_TOKEN.strip(),
-    timeout=60.0
-)
+# إنشاء عملاء OpenRouter بناءً على المفاتيح المتوفرة
+clients = []
+for key in API_KEYS:
+    clients.append(AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=key,
+        timeout=60.0
+    ))
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
@@ -45,7 +47,7 @@ def get_main_menu():
         inline_keyboard=[
             [InlineKeyboardButton(text="📄 كيفية الترجمة؟", callback_data="how_to")],
             [
-                InlineKeyboardButton(text="ℹ️ حول البوت", callback_data="about"),
+                InlineKeyboardButton(text="ℹ️️ حول البوت", callback_data="about"),
                 InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="settings")
             ]
         ]
@@ -74,47 +76,52 @@ async def cb_about(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "settings")
 async def cb_settings(callback: types.CallbackQuery):
-    text = "⚙️ **الإعدادات:**\n\n🔹 **النموذج:** LLaMA 3.2 3B (الإصدار الأحدث والأسرع)\n🔹 **حجم الخط العربي:** 7.5\n🔹 **الوضع:** ذكي سريع\n\n*(الخدمة مدعومة عبر شبكة Cloudflare العالمية)*"
+    text = f"⚙️ **الإعدادات:**\n\n🔹 **النموذج:** OpenRouter Free (الأكثر دقة)\n🔹 **حجم الخط العربي:** 8.0\n🔹 **المفاتيح النشطة:** {len(clients)} مفتاح للتبديل التلقائي\n\n*(البوت يعمل بنظام التبديل الذكي لضمان الاستقرار)*"
     await callback.message.edit_text(text, reply_markup=get_main_menu())
     await callback.answer()
 
 async def translate_blocks(blocks_text: list) -> list:
-    if not blocks_text or not CF_ACCOUNT_ID or not CF_API_TOKEN:
+    if not blocks_text or not clients:
         return []
     
     prompt = "ترجم النصوص التالية إلى اللغة العربية بدقة أكاديمية. أعد كتابة الترجمة بنفس الترقيم بالضبط (رقم|| النص المترجم). لا تكتب أي مقدمات أو شروحات إضافية.\n\n"
     for i, text in enumerate(blocks_text):
         prompt += f"{i}|| {text}\n"
 
-    try:
-        # التحديث هنا: استخدام نموذج Llama 3.2 الأحدث
-        response = await client.chat.completions.create(
-            model="@cf/meta/llama-3.2-3b-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-        )
-        
-        content = response.choices[0].message.content
-        if not content:
-            return ["" for _ in blocks_text]
+    # المحاولة باستخدام المفاتيح المتوفرة
+    for client in clients:
+        try:
+            response = await client.chat.completions.create(
+                model="openrouter/free",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
             
-        raw_res = content.strip()
-        translated_results = ["" for _ in range(len(blocks_text))]
+            content = response.choices[0].message.content
+            if not content:
+                continue
+                
+            raw_res = content.strip()
+            translated_results = ["" for _ in range(len(blocks_text))]
+            
+            for line in raw_res.split('\n'):
+                if '||' in line:
+                    parts = line.split('||', 1)
+                    num_str = parts[0].strip()
+                    if num_str.isdigit():
+                        idx = int(num_str)
+                        if 0 <= idx < len(blocks_text):
+                            translated_results[idx] = parts[1].strip()
+            
+            # إذا تمت الترجمة بنجاح وتم إرجاع قائمة مناسبة
+            return translated_results
         
-        for line in raw_res.split('\n'):
-            if '||' in line:
-                parts = line.split('||', 1)
-                num_str = parts[0].strip()
-                if num_str.isdigit():
-                    idx = int(num_str)
-                    if 0 <= idx < len(blocks_text):
-                        translated_results[idx] = parts[1].strip()
-        
-        return translated_results
-        
-    except Exception as e:
-        logging.error(f"Translation Error via Cloudflare: {e}")
-        return ["" for _ in blocks_text]
+        except Exception as e:
+            logging.warning(f"فشل المفتاح الحالي، جاري الانتقال للمفتاح التالي. الخطأ: {e}")
+            continue
+            
+    logging.error("استنفدت جميع المفاتيح المتاحة.")
+    return ["" for _ in blocks_text]
 
 def split_text_to_fit(text, max_length=95):
     words = text.split()
@@ -170,7 +177,7 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
             try:
                 wrapped_lines = split_text_to_fit(ar_text)
                 x0, y0, x1, y1 = coord
-                y_offset = y1 + 8 
+                y_offset = y1 + 9 # زيادة المسافة قليلاً لتحسين الوضوح
                 
                 for line in wrapped_lines:
                     reshaped = arabic_reshaper.reshape(line)
@@ -183,14 +190,14 @@ async def process_pdf_interlinear(pdf_bytes: bytes) -> io.BytesIO:
                             insert_point,
                             bidi_text,
                             fontname=font_to_use,
-                            fontsize=7.5,
+                            fontsize=8.0, # تكبير الخط قليلاً ليكون مقروءاً بشكل أفضل
                             color=(0.7, 0.1, 0.1),
                             rotate=0
                         )
                     except Exception as e:
                         logging.error(f"Error inserting text: {e}")
                     
-                    y_offset += 10 
+                    y_offset += 11 
 
             except Exception as e:
                  logging.error(f"Error processing arabic text: {e}")
@@ -210,7 +217,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر عبر Cloudflare AI ⏳")
+    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر بأعلى دقة ⏳")
 
     try:
         pdf_io = io.BytesIO()
@@ -251,7 +258,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بقوة Cloudflare Workers AI والأصدار الحديث...")
+    logging.info(f"🚀 البوت يعمل الآن بقوة {len(clients)} مفتاح(مفاتيح) من OpenRouter...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
