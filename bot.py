@@ -35,16 +35,17 @@ clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, tim
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# --- إعداد قاعدة البيانات للأرشفة والبحث ---
+# --- إعداد قاعدة البيانات للأرشفة ---
 db_conn = sqlite3.connect("academic_archive.db", check_same_thread=False)
 cursor = db_conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT, file_id TEXT, keyword TEXT)")
 db_conn.commit()
 
-class PDFStates(StatesGroup):
+class BotStates(StatesGroup):
     waiting_for_action = State()
     waiting_for_range = State()
-    file_data = State()
+    waiting_for_dict_term = State()
+    waiting_for_search_query = State()
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -61,20 +62,25 @@ def get_pdf_actions():
         [InlineKeyboardButton(text="💾 حفظ في أرشيف القسم", callback_data="action_archive")]
     ])
 
-# --- تحديث شريط التقدم التفاعلي ---
+# دالة ذكية لإرسال الرسائل الطويلة جداً وتجاوز خطأ MESSAGE_TOO_LONG
+async def send_long_message(msg: types.Message, text: str, parse_mode=None):
+    if not text:
+        await msg.answer("❌ لا يوجد محتوى لعرضه.")
+        return
+    for i in range(0, len(text), 4000):
+        await msg.answer(text[i:i+4000], parse_mode=parse_mode)
+
 async def update_progress(msg: types.Message, current: int, total: int, text="جاري المعالجة"):
-    if total == 0: return
+    if total <= 0: return
     percent = int((current / total) * 100)
     filled = int(percent / 10)
     bar = "█" * filled + "░" * (10 - filled)
     try:
-        # تحديث الرسالة كل صفحتين لتجنب حظر التليجرام (Rate Limit)
         if current % 2 == 0 or current == total:
             await msg.edit_text(f"⏳ **{text}...**\n\nالتقدم: [{bar}] {percent}%\nصفحة {current} من {total}")
     except TelegramBadRequest:
         pass
 
-# --- وظائف الذكاء الاصطناعي الأساسية ---
 async def ai_request(prompt: str) -> str:
     if not clients: return ""
     for client in clients:
@@ -105,9 +111,10 @@ async def translate_blocks(blocks_text: list) -> list:
                 translated_results[int(num_str)] = parts[1].strip()
     return translated_results
 
-# --- تصميم صفحة الغلاف الأكاديمية ---
+# إصلاح دالة الغلاف 
 def add_academic_cover(doc: fitz.Document, filename: str):
-    page = doc.insert_page(0, width=595, height=842) # حجم A4
+    doc.insert_page(0, width=595, height=842)
+    page = doc[0] # الإصلاح هنا: استدعاء كائن الصفحة بدلاً من المتغير الرقمي
     page.insert_font(fontname="amiri", fontfile=FONT_PATH)
     
     texts = [
@@ -122,7 +129,7 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         reshaped = arabic_reshaper.reshape(text)
         bidi_text = get_display(reshaped)
         text_length = fitz.get_text_length(bidi_text, fontname="amiri", fontsize=size)
-        x = (595 - text_length) / 2 # توسيط النص
+        x = (595 - text_length) / 2 
         page.insert_text(fitz.Point(x, y), bidi_text, fontname="amiri", fontsize=size, color=(0.1, 0.2, 0.5))
 
 def split_text_to_fit(text, max_length=85):
@@ -141,15 +148,15 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     font_to_use = "amiri" if os.path.exists(FONT_PATH) else "helv"
     
-    # حذف الصفحات خارج النطاق المحدد
-    pages_to_delete = [i for i in range(len(doc)) if i < start_page or i > end_page]
-    if pages_to_delete: doc.delete_pages(pages_to_delete)
+    # تحديد النطاق بشكل صحيح وآمن
+    pages_to_keep = [i for i in range(len(doc)) if start_page <= i <= end_page]
+    if pages_to_keep:
+        doc.select(pages_to_keep)
 
     add_academic_cover(doc, filename)
-
-    total_pages = len(doc) - 1 # خصم صفحة الغلاف
+    total_pages = len(doc) - 1 
     
-    for page_idx in range(1, len(doc)): # تجاهل الغلاف
+    for page_idx in range(1, len(doc)):
         await update_progress(status_msg, page_idx, total_pages, "جاري ترجمة وتنسيق الصفحات")
         page = doc[page_idx]
         if font_to_use == "amiri": page.insert_font(fontname="amiri", fontfile=FONT_PATH)
@@ -187,7 +194,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                         reshaped = arabic_reshaper.reshape(w_line)
                         bidi_text = get_display(reshaped)
                         
-                        # التوسيط الذكي أسفل النص الإنجليزي
                         t_len = fitz.get_text_length(bidi_text, fontname=font_to_use, fontsize=8.0)
                         centered_x = x0 + (block_width - t_len) / 2
                         insert_x = centered_x if centered_x > x0 else x0
@@ -205,40 +211,64 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
     output.seek(0)
     return output
 
-# --- أوامر البوت والتفاعل ---
+
+# ==========================================
+# الأوامر والقائمة الرئيسية
+# ==========================================
+
 @dp.message(CommandStart())
-async def handle_start(message: types.Message):
+async def handle_start(message: types.Message, state: FSMContext):
+    await state.clear()
     text = "👋 مرحباً بك في **المنصة الأكاديمية لهندسة النفط**!\n\nأرسل أي ملزمة (PDF) للبدء، أو استخدم القائمة أدناه:"
     await message.answer(text, reply_markup=get_main_menu())
 
-@dp.message(Command("dict"))
-async def cmd_dictionary(message: types.Message):
-    term = message.text.replace("/dict", "").strip()
-    if not term:
-        await message.answer("💡 يرجى كتابة المصطلح بعد الأمر. مثال:\n`/dict Porosity`", parse_mode="Markdown")
-        return
-    msg = await message.answer("🔍 جاري البحث في القاموس الهندسي...")
-    prompt = f"اشرح المصطلح الهندسي النفطي '{term}' باللغة العربية بشكل دقيق ومبسط لطلاب الجامعة، مع ذكر استخداماته."
-    response = await ai_request(prompt)
-    await msg.edit_text(f"📘 **قاموس هندسة النفط:**\n\nمصطلح: `{term}`\n\n{response}", parse_mode="Markdown")
+@dp.callback_query(F.data == "cmd_about")
+async def cb_about(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = "ℹ️ **حول البوت:**\n\nتم تطوير هذا البوت لطلاب قسم هندسة النفط. يعتمد على الذكاء الاصطناعي لترجمة وتلخيص المحاضرات بشكل متقدم."
+    await callback.message.edit_text(text, reply_markup=get_main_menu())
+    await callback.answer()
 
-@dp.message(Command("search"))
-async def cmd_search(message: types.Message):
-    query = message.text.replace("/search", "").strip().lower()
-    if not query:
-        await message.answer("💡 للبحث في الأرشيف، اكتب الأمر يليه اسم الملزمة. مثال:\n`/search drilling`", parse_mode="Markdown")
-        return
-    
+@dp.callback_query(F.data == "cmd_dict")
+async def cb_dict(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📖 **قاموس هندسة النفط:**\n\nأرسل الآن المصطلح الهندسي الذي تريد شرحه:", parse_mode="Markdown")
+    await state.set_state(BotStates.waiting_for_dict_term)
+    await callback.answer()
+
+@dp.callback_query(F.data == "cmd_search")
+async def cb_search(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("🔍 **البحث في الأرشيف:**\n\nأرسل الآن جزء من اسم الملزمة للبحث عنها:")
+    await state.set_state(BotStates.waiting_for_search_query)
+    await callback.answer()
+
+@dp.message(BotStates.waiting_for_dict_term)
+async def process_dict_term(message: types.Message, state: FSMContext):
+    term = message.text.strip()
+    msg = await message.answer("🔍 جاري البحث وتلخيص الشرح...")
+    prompt = f"اشرح المصطلح الهندسي النفطي '{term}' باللغة العربية بشكل دقيق ومبسط لطلاب الجامعة، مع ذكر القوانين المرتبطة إن وجدت."
+    response = await ai_request(prompt)
+    await send_long_message(msg, f"📘 **شرح المصطلح:** `{term}`\n\n{response}")
+    await message.answer("اختر من القائمة لمتابعة العمل:", reply_markup=get_main_menu())
+    await state.clear()
+
+@dp.message(BotStates.waiting_for_search_query)
+async def process_search_query(message: types.Message, state: FSMContext):
+    query = message.text.strip().lower()
     cursor.execute("SELECT file_name, file_id FROM files WHERE keyword LIKE ?", (f"%{query}%",))
     results = cursor.fetchall()
     
     if not results:
-        await message.answer("❌ لم يتم العثور على ملازم بهذا الاسم في الأرشيف.")
-        return
-        
-    await message.answer(f"✅ تم العثور على {len(results)} نتيجة. جاري الإرسال...")
-    for name, f_id in results[:5]: # إرسال أول 5 نتائج كحد أقصى
-        await message.answer_document(f_id, caption=f"📁 {name}")
+        await message.answer("❌ لم يتم العثور على نتيجة في الأرشيف.", reply_markup=get_main_menu())
+    else:
+        await message.answer(f"✅ تم العثور على {len(results)} نتيجة. جاري الإرسال...")
+        for name, f_id in results[:5]: 
+            await message.answer_document(f_id, caption=f"📁 {name}")
+    await state.clear()
+
+
+# ==========================================
+# معالجة ملفات PDF والميزات الجديدة
+# ==========================================
 
 @dp.message(F.document)
 async def handle_document(message: types.Message, state: FSMContext):
@@ -248,37 +278,69 @@ async def handle_document(message: types.Message, state: FSMContext):
     
     await state.update_data(file_id=message.document.file_id, file_name=message.document.file_name)
     await message.answer("📥 تم استلام الملف بنجاح. ماذا تريد أن تفعل به؟", reply_markup=get_pdf_actions())
-    await state.set_state(PDFStates.waiting_for_action)
+    await state.set_state(BotStates.waiting_for_action)
 
-@dp.callback_query(PDFStates.waiting_for_action)
+@dp.callback_query(BotStates.waiting_for_action)
 async def process_action(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
     data = await state.get_data()
+    file_id = data.get("file_id")
     file_name = data.get("file_name")
     
     if action == "action_archive":
         cursor.execute("INSERT INTO files (file_name, file_id, keyword) VALUES (?, ?, ?)", 
-                      (file_name, data.get("file_id"), file_name.lower()))
+                      (file_name, file_id, file_name.lower()))
         db_conn.commit()
-        await callback.message.edit_text("✅ تم حفظ الملف في أرشيف القسم بنجاح. يمكن للطلاب البحث عنه لاحقاً.")
+        await callback.message.edit_text("✅ تم حفظ الملف في أرشيف القسم بنجاح.")
         await state.clear()
         
     elif action == "action_translate":
         await callback.message.edit_text("📄 هل تريد ترجمة الملف كاملاً أم صفحات محددة؟\n\n- اكتب `الكل` لترجمة كامل الملف.\n- أو اكتب النطاق (مثال: `1-5`)", parse_mode="Markdown")
-        await state.set_state(PDFStates.waiting_for_range)
+        await state.set_state(BotStates.waiting_for_range)
         
     elif action == "action_summarize":
         await callback.message.edit_text("⏳ جاري قراءة الملف وتلخيصه استناداً لأهم القوانين والنقاط...")
-        # هنا يمكن دمج كود استخراج أول 3 صفحات وإرسالها للـ AI (للاختصار سنضع رسالة توجيهية)
-        await callback.message.answer("هذه الميزة قيد المعالجة السحابية ستصلك الخلاصة قريباً.")
-        await state.clear()
-        
+        try:
+            file = await bot.get_file(file_id)
+            pdf_io = io.BytesIO()
+            await bot.download_file(file.file_path, destination=pdf_io)
+            doc = fitz.open(stream=pdf_io.getvalue(), filetype="pdf")
+            
+            # استخراج النص من أول 5 صفحات للتلخيص
+            text_to_summarize = ""
+            for i in range(min(5, len(doc))):
+                text_to_summarize += doc[i].get_text()
+            
+            prompt = f"قم بتلخيص هذه المحاضرة الهندسية واستخرج أهم القوانين، المصطلحات، والنقاط الأساسية باللغة العربية باختصار مفيد للطلاب:\n\n{text_to_summarize[:3500]}"
+            summary = await ai_request(prompt)
+            await send_long_message(callback.message, f"📑 **خلاصة الملف ({file_name}):**\n\n{summary}")
+        except Exception as e:
+            logging.error(f"Summarize Error: {e}")
+            await callback.message.answer("❌ حدث خطأ أثناء التلخيص.")
+        finally:
+            await state.clear()
+            
     elif action == "action_extract":
         await callback.message.edit_text("⏳ جاري استخراج النص...")
-        await callback.message.answer("تم استخراج النصوص، (ميزة تحت التطوير لجعلها تدعم الجداول).")
-        await state.clear()
+        try:
+            file = await bot.get_file(file_id)
+            pdf_io = io.BytesIO()
+            await bot.download_file(file.file_path, destination=pdf_io)
+            doc = fitz.open(stream=pdf_io.getvalue(), filetype="pdf")
+            
+            extracted_text = ""
+            for i in range(min(5, len(doc))): 
+                extracted_text += f"\n--- صفحة {i+1} ---\n" + doc[i].get_text()
+            
+            text_to_send = extracted_text[:3500] + "\n...(تم الاقتطاع لتجاوز الحد)" if len(extracted_text) > 3500 else extracted_text
+            await send_long_message(callback.message, text_to_send)
+        except Exception as e:
+            logging.error(f"Extract Error: {e}")
+            await callback.message.answer("❌ حدث خطأ أثناء استخراج النص.")
+        finally:
+            await state.clear()
 
-@dp.message(PDFStates.waiting_for_range)
+@dp.message(BotStates.waiting_for_range)
 async def execute_translation(message: types.Message, state: FSMContext):
     data = await state.get_data()
     file_id = data.get("file_id")
@@ -310,12 +372,15 @@ async def execute_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(document=to_send, caption="✅ تمت الترجمة بنجاح مع الغلاف والتنسيق الجديد!", reply_markup=get_main_menu())
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"Translation Error: {e}")
         await message.answer("❌ حدث خطأ أثناء المعالجة.")
     finally:
         await state.clear()
 
-# --- خادم الويب (Render) ---
+
+# ==========================================
+# خادم الويب للعمل على Render
+# ==========================================
 async def handle_ping(request):
     return web.Response(text="Bot is running alive!")
 
@@ -330,7 +395,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بكامل الخدمات האكاديمية (أرشيف، ترجمة، قاموس، غلاف)...")
+    logging.info("🚀 البوت يعمل الآن بكامل الخدمات... تم إصلاح مشكلة الغلاف والرسائل الطويلة!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
