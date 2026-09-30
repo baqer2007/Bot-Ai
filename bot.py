@@ -39,20 +39,27 @@ ADMIN_USER_IDS = [832023205, 832023272, 832023243, 832023294, 832023401, 8320234
 KEYS_STRING = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_API_KEY", ""))
 API_KEYS = [k.strip() for k in KEYS_STRING.split(",") if k.strip()]
 
-FONT_PATH = "Amiri-Regular.ttf"
-FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf"
+FONT_PATH = "Arabic-Regular.ttf"
+# روابط بديلة لضمان تحميل خط عربي سليم وعدم تلف الملف
+FONT_URLS = [
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo-Regular.ttf",
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf"
+]
 
 def ensure_font_downloaded():
-    if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 50000:
+    if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
+        return
+    for url in FONT_URLS:
         try:
-            logging.info("Downloading Amiri font...")
-            opener = urllib.request.build_opener()
-            opener.addheaders = [('User-agent', 'Mozilla/5.0')]
-            urllib.request.install_opener(opener)
-            urllib.request.urlretrieve(FONT_URL, FONT_PATH)
-            logging.info("Amiri font downloaded successfully.")
+            logging.info(f"Downloading font from {url}...")
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15) as response, open(FONT_PATH, 'wb') as out_file:
+                out_file.write(response.read())
+            if os.path.getsize(FONT_PATH) > 50000:
+                logging.info("تم تحميل الخط العربي بنجاح!")
+                break
         except Exception as e:
-            logging.error(f"Font download error: {e}")
+            logging.error(f"فشل تحميل الخط من الرابط: {e}")
 
 ensure_font_downloaded()
 
@@ -93,53 +100,37 @@ def clean_math_text(text: str) -> str:
     if not text: return ""
     replacements = [
         (r'\\frac\{([^}]+)\}\{([^}]+)\}', r'(\1 / \2)'),
-        (r'\\In\b', 'ln'),
-        (r'\\ln\b', 'ln'),
-        (r'\\log_\{10\}', 'log10'),
-        (r'\\tag\{[^}]+\}', ''),
-        (r'\\Delta\b', 'Δ'),
-        (r'\\mu\b', 'μ'),
-        (r'\\rho\b', 'ρ'),
-        (r'\\phi\b', 'φ'),
-        (r'\\pi\b', 'π'),
-        (r'\\approx\b', '≈'),
-        (r'\\times\b', '×'),
-        (r'\\pm\b', '±'),
-        (r'\\circ', '°'),
-        (r'\^\{([^}]+)\}', r'^\1'),
-        (r'_\{([^}]+)\}', r'_\1'),
-        (r'\\[(\[\]\)]', ''),
-        (r'\$', ''),
-        (r'\\text\{([^}]+)\}', r'\1'),
+        (r'\\In\b', 'ln'), (r'\\ln\b', 'ln'), (r'\\log_\{10\}', 'log10'),
+        (r'\\tag\{[^}]+\}', ''), (r'\\Delta\b', 'Δ'), (r'\\mu\b', 'μ'),
+        (r'\\rho\b', 'ρ'), (r'\\phi\b', 'φ'), (r'\\pi\b', 'π'),
+        (r'\\approx\b', '≈'), (r'\\times\b', '×'), (r'\\pm\b', '±'),
+        (r'\\circ', '°'), (r'\^\{([^}]+)\}', r'^\1'), (r'_\{([^}]+)\}', r'_\1'),
+        (r'\\[(\[\]\)]', ''), (r'\$', ''), (r'\\text\{([^}]+)\}', r'\1'),
+        (r'\\[a-zA-Z]+', '')
     ]
     cleaned = text
     for pattern, repl in replacements:
         cleaned = re.sub(pattern, repl, cleaned)
-    return cleaned
+    return cleaned.replace("  ", " ").strip()
 
-def format_arabic_text(text: str) -> str:
+def format_arabic(text: str) -> str:
     if not text: return ""
-    cleaned = clean_math_text(text)
-    reshaped = arabic_reshaper.reshape(cleaned)
+    reshaped = arabic_reshaper.reshape(clean_math_text(text))
     return get_display(reshaped)
 
-def render_arabic_line(page: fitz.Page, point: fitz.Point, text: str, font_alias: str, fontsize=8.5, color=(0.08, 0.22, 0.58)):
-    bidi_str = format_arabic_text(text)
+def get_font_length(text: str, fontsize: float) -> float:
     try:
-        page.insert_text(point, bidi_str, fontname=font_alias, fontsize=fontsize, color=color)
+        font = fitz.Font(fontfile=FONT_PATH)
+        return font.text_length(text, fontsize=fontsize)
     except Exception:
-        page.insert_text(point, bidi_str, fontfile=FONT_PATH, fontsize=fontsize, color=color)
+        return fitz.get_text_length(text, fontname="helv", fontsize=fontsize)
 
-def measure_arabic_length(text: str, font_alias: str, fontsize=8.5) -> float:
-    bidi_str = format_arabic_text(text)
-    try:
-        return fitz.get_text_length(bidi_str, fontname=font_alias, fontsize=fontsize)
-    except Exception:
+def prepare_page_font(page: fitz.Page):
+    if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
         try:
-            f = fitz.Font(fontfile=FONT_PATH)
-            return f.text_length(bidi_str, fontsize=fontsize)
+            page.insert_font(fontname="arab", fontfile=FONT_PATH)
         except Exception:
-            return fitz.get_text_length(bidi_str, fontname="helv", fontsize=fontsize)
+            pass
 
 async def run_live_counter(status_msg: types.Message, task_title: str, stop_event: asyncio.Event):
     start_time = time.time()
@@ -175,7 +166,7 @@ def get_main_menu(user_id: int):
         [InlineKeyboardButton(text="🧮 حاسبة ومحول وحدات النفط", callback_data="cmd_calc"),
          InlineKeyboardButton(text="📐 مفسر المعادلات والرموز", callback_data="cmd_formula")],
         [InlineKeyboardButton(text="📝 إنشاء تقرير مختبر أكاديمي", callback_data="cmd_lab"),
-         InlineKeyboardButton(text="🔄 تحويل PowerPoint إلى PDF كامل", callback_data="cmd_convert")],
+         InlineKeyboardButton(text="🔄 تحويل PowerPoint إلى PDF", callback_data="cmd_convert")],
         [InlineKeyboardButton(text="📅 الجدول والتبليغات الرسمية", callback_data="cmd_schedule"),
          InlineKeyboardButton(text="ℹ حول المنصة", callback_data="cmd_about")]
     ]
@@ -235,8 +226,8 @@ async def ai_request(prompt: str) -> str:
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
     prompt = (
-        "ترجم العبارات الهندسية التالية إلى العربية بأسلوب علمي رصين ومختصر ومفهوم لطلاب كلية الهندسة.\n"
-        "حافظ على الرموز والمعادلات الرياضية. التزم بالترقيم بالضبط (رقم|| النص المترجم).\n\n"
+        "ترجم العبارات الأكاديمية التالية إلى العربية بأسلوب علمي رصين ومختصر لطلاب الهندسة.\n"
+        "حافظ على الرموز والمعادلات الرياضية. التزم بصيغة الترقيم بالضبط (رقم|| النص المترجم).\n\n"
     )
     for i, text in enumerate(blocks_text):
         prompt += f"{i}|| {text}\n"
@@ -251,7 +242,7 @@ async def translate_blocks(blocks_text: list) -> list:
                 translated_results[int(num_str)] = clean_math_text(parts[1].strip())
     return translated_results
 
-def split_text_to_fit(text, max_length=75):
+def split_text_to_fit(text, max_length=70):
     words = text.split()
     lines, current_line = [], ""
     for word in words:
@@ -263,9 +254,10 @@ def split_text_to_fit(text, max_length=75):
     if current_line: lines.append(current_line.strip())
     return lines
 
-def add_academic_cover(doc: fitz.Document, filename: str, font_alias: str):
+def add_academic_cover(doc: fitz.Document, filename: str):
     doc.insert_page(0, width=595, height=842)
     page = doc[0]
+    prepare_page_font(page)
     
     border_rect = fitz.Rect(25, 25, 570, 817)
     page.draw_rect(border_rect, color=(0.1, 0.22, 0.45), width=2)
@@ -278,20 +270,18 @@ def add_academic_cover(doc: fitz.Document, filename: str, font_alias: str):
         ("إعداد وتطوير: دفعة هندسة النفط - جامعة كربلاء", 14, 730)
     ]
     for text, size, y in texts:
-        t_len = measure_arabic_length(text, font_alias, fontsize=size)
+        bidi_text = format_arabic(text)
+        t_len = get_font_length(bidi_text, fontsize=size)
         x = (595 - t_len) / 2
-        render_arabic_line(page, fitz.Point(x, y), text, font_alias, fontsize=size, color=(0.08, 0.2, 0.45))
+        page.insert_text(fitz.Point(x, y), bidi_text, fontname="arab", fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF مع الحفاظ التام على الحروف العربية ---
+# --- معالجة وترجمة الـ PDF עם حل اختفاء الحروف ومحاذاة الصندوق ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
     
     out_doc = fitz.open()
-    font_alias = "amiri_shared"
-    
-    # تسجيل الخط العربي داخل المستند ليعمل في كافة الصفحات بشكل سليم
-    add_academic_cover(out_doc, filename, font_alias)
+    add_academic_cover(out_doc, filename)
     
     total_pages = len(pages_to_keep)
     start_time = time.time()
@@ -323,15 +313,16 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         translations = await translate_blocks(text_blocks) if text_blocks else []
         
         new_page = out_doc.new_page(width=595, height=842)
+        prepare_page_font(new_page)
         
         # الترويسة والتذييل
         new_page.draw_line(fitz.Point(40, 40), fitz.Point(555, 40), color=(0.7, 0.7, 0.7), width=0.8)
         new_page.insert_text(fitz.Point(45, 35), f"Petroleum Engineering Dept | Page {idx}", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
         new_page.draw_line(fitz.Point(40, 805), fitz.Point(555, 805), color=(0.7, 0.7, 0.7), width=0.8)
         
-        wm_txt = "قسم هندسة النفط - جامعة كربلاء"
-        t_len = measure_arabic_length(wm_txt, font_alias, fontsize=9)
-        render_arabic_line(new_page, fitz.Point((595 - t_len) / 2, 820), wm_txt, font_alias, fontsize=9, color=(0.6, 0.6, 0.6))
+        wm_txt = format_arabic("قسم هندسة النفط - جامعة كربلاء")
+        t_len = get_font_length(wm_txt, fontsize=9)
+        new_page.insert_text(fitz.Point((595 - t_len) / 2, 820), wm_txt, fontname="arab", fontsize=9, color=(0.6, 0.6, 0.6))
 
         y = 65
         t_idx = 0
@@ -340,15 +331,16 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 txt = clean_math_text(b[4].strip())
                 if not txt: continue
                 
-                # طباعة النص الإنجليزي
+                # طباعة النص الإنجليزي الأصلي
                 for en_line in split_text_to_fit(txt.replace("\n", " "), max_length=85):
                     if y > 760:
                         new_page = out_doc.new_page(width=595, height=842)
+                        prepare_page_font(new_page)
                         y = 65
                     new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
                     y += 13
 
-                # طباعة النص العربي داخل الصندوق الأزرق الشفاف
+                # طباعة الترجمة داخل صندوق التظليل
                 if t_idx < len(translations) and translations[t_idx]:
                     ar_raw = translations[t_idx].strip()
                     if ar_raw and ar_raw != txt:
@@ -357,17 +349,21 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                         
                         if y + box_height > 760:
                             new_page = out_doc.new_page(width=595, height=842)
+                            prepare_page_font(new_page)
                             y = 65
                             
-                        box_rect = fitz.Rect(45, y - 2, 545, y + box_height - 2)
+                        # الصندوق الأزرق: محاذاة مضبوطة من اليسار 55 إلى 535
+                        box_rect = fitz.Rect(55, y - 2, 535, y + box_height - 2)
                         new_page.draw_rect(box_rect, color=(0.82, 0.88, 0.96), fill=(0.94, 0.97, 1.0))
-                        new_page.draw_line(fitz.Point(545, y - 2), fitz.Point(545, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
+                        new_page.draw_line(fitz.Point(535, y - 2), fitz.Point(535, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
                         
                         cur_y = y + 10
                         for a_l in ar_lines:
-                            line_len = measure_arabic_length(a_l, font_alias, fontsize=8.5)
-                            x_target = max(55, 535 - line_len)
-                            render_arabic_line(new_page, fitz.Point(x_target, cur_y), a_l, font_alias, fontsize=8.5, color=(0.08, 0.22, 0.58))
+                            bidi_line = format_arabic(a_l)
+                            line_len = get_font_length(bidi_line, fontsize=8.5)
+                            # محاذاة النص داخل الصندوق: يمنع الانزياح الشديد لليمين
+                            x_target = max(65, 525 - line_len)
+                            new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontname="arab", fontsize=8.5, color=(0.08, 0.22, 0.58))
                             cur_y += 14
                             
                         y += (box_height + 4)
@@ -386,7 +382,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
 def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.BytesIO:
     prs = Presentation(pptx_io)
     doc = fitz.open()
-    font_alias = "amiri_shared"
     
     cover = doc.new_page(width=792, height=612)
     cover_lines = [
@@ -402,6 +397,7 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
 
     for idx, slide in enumerate(prs.slides):
         page = doc.new_page(width=792, height=612)
+        prepare_page_font(page)
         
         rect = fitz.Rect(30, 30, 762, 582)
         page.draw_rect(rect, color=(0.15, 0.25, 0.55), width=1.5)
@@ -424,8 +420,9 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
                     if not clean_line or y_cursor > 550: continue
                     is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_line)
                     if is_ar:
-                        t_len = measure_arabic_length(clean_line, font_alias, fontsize=9.5)
-                        render_arabic_line(page, fitz.Point(740 - t_len, y_cursor), clean_line, font_alias, fontsize=9.5, color=(0.1, 0.1, 0.1))
+                        b_txt = format_arabic(clean_line)
+                        t_len = get_font_length(b_txt, fontsize=9.5)
+                        page.insert_text(fitz.Point(740 - t_len, y_cursor), b_txt, fontname="arab", fontsize=9.5, color=(0.1, 0.1, 0.1))
                     else:
                         page.insert_text(fitz.Point(50, y_cursor), f"• {clean_line[:105]}", fontname="helv", fontsize=9.5, color=(0.15, 0.15, 0.15))
                     y_cursor += 16
@@ -447,11 +444,11 @@ def convert_pptx_to_formatted_pdf(pptx_io: io.BytesIO, filename: str) -> io.Byte
     out.seek(0)
     return out
 
-# --- بناء وتنسيق تقارير المختبر ---
+# --- بناء وتنسيق تقارير المختبر الأكاديمية الرسمية ---
 def generate_full_academic_report(metadata: dict, report_content: str) -> io.BytesIO:
     doc = fitz.open()
     cover = doc.new_page(width=595, height=842)
-    font_alias = "amiri_shared"
+    prepare_page_font(cover)
     
     border_rect = fitz.Rect(30, 30, 565, 812)
     cover.draw_rect(border_rect, color=(0.1, 0.2, 0.45), width=2)
@@ -463,14 +460,15 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     l_title = metadata.get('lab_title', 'Point VAP Experiment')
     
     headers = [
-        ("جامعة كربلاء - كلية الهندسة", 18, 110),
-        (f"قسم {s_dept}", 15, 140),
-        ("تقرير مختبري أكاديمي معتمد", 22, 290),
-        (f"عنوان التجربة: {l_title[:50]}", 14, 340)
+        ("جامعة كربلاء - كلية الهندسة", 22, 110),
+        (f"قسم {s_dept}", 18, 150),
+        ("تقرير مختبري أكاديمي معتمد", 20, 300),
+        (f"عنوان التجربة: {l_title[:50]}", 14, 350)
     ]
     for txt, sz, y in headers:
-        t_len = measure_arabic_length(txt, font_alias, fontsize=sz)
-        render_arabic_line(cover, fitz.Point((595 - t_len)/2, y), txt, font_alias, fontsize=sz, color=(0.08, 0.18, 0.4))
+        b_txt = format_arabic(txt)
+        t_len = get_font_length(b_txt, fontsize=sz)
+        cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontname="arab", fontsize=sz, color=(0.08, 0.18, 0.45))
         
     student_info = [
         f"اسم الطالب: {s_name}",
@@ -479,13 +477,15 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
         f"نوع الدراسة: {s_study}",
         "العام الدراسي: 2026"
     ]
-    y_info = 500
+    y_info = 520
     for info in student_info:
-        render_arabic_line(cover, fitz.Point(360, y_info), info, font_alias, fontsize=12, color=(0.15, 0.15, 0.15))
+        b_info = format_arabic(info)
+        cover.insert_text(fitz.Point(360, y_info), b_info, fontname="arab", fontsize=12, color=(0.15, 0.15, 0.15))
         y_info += 28
 
     def create_content_page(p_num):
         pg = doc.new_page(width=595, height=842)
+        prepare_page_font(pg)
         pg.draw_line(fitz.Point(40, 45), fitz.Point(555, 45), color=(0.7, 0.7, 0.7), width=0.8)
         pg.insert_text(fitz.Point(45, 40), "Petroleum Engineering Dept - University of Kerbala", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
         pg.draw_line(fitz.Point(40, 800), fitz.Point(555, 800), color=(0.7, 0.7, 0.7), width=0.8)
@@ -518,25 +518,28 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 col_width = 500 / max(1, len(cells))
                 if not in_table:
                     in_table = True
-                    page.draw_rect(fitz.Rect(45, y - 2, 550, y + 16), color=(0.75, 0.8, 0.9), fill=(0.90, 0.93, 0.98))
+                    # رأس الجدول
+                    page.draw_rect(fitz.Rect(45, y - 2, 550, y + 18), color=(0.15, 0.25, 0.55), fill=(0.85, 0.90, 0.98))
                     for col_idx, cell_txt in enumerate(cells):
-                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 10), cell_txt[:25], fontname="helv", fontsize=9.0, color=(0.1, 0.2, 0.4))
-                    y += 20
+                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 11), cell_txt[:35], fontname="helv", fontsize=10.0, color=(0.1, 0.15, 0.4))
+                    y += 22
                 else:
-                    page.draw_line(fitz.Point(45, y + 14), fitz.Point(550, y + 14), color=(0.85, 0.85, 0.85), width=0.5)
+                    # صفوف الجدول
+                    page.draw_line(fitz.Point(45, y + 16), fitz.Point(550, y + 16), color=(0.8, 0.8, 0.8), width=0.5)
                     for col_idx, cell_txt in enumerate(cells):
-                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 10), cell_txt[:25], fontname="helv", fontsize=8.5, color=(0.15, 0.15, 0.15))
+                        page.insert_text(fitz.Point(50 + col_idx * col_width, y + 11), cell_txt[:35], fontname="helv", fontsize=9.0, color=(0.15, 0.15, 0.15))
                     y += 18
                 continue
         else:
             in_table = False
 
+        # تمييز العناوين باللون الكحلي والبنط العريض
         is_heading = any(clean_l.startswith(h) for h in ["1.", "2.", "3.", "4.", "5.", "#", "Abstract", "Objective", "Theory", "Procedure", "Discussion", "Conclusion", "Reference", "Table"])
-        font_sz = 11.0 if is_heading else 9.0
-        font_col = (0.08, 0.18, 0.45) if is_heading else (0.15, 0.15, 0.15)
+        font_sz = 12.0 if is_heading else 9.5
+        font_col = (0.05, 0.15, 0.45) if is_heading else (0.12, 0.12, 0.12)
         
         is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_l)
-        wrapped = split_text_to_fit(clean_l, max_length=70 if is_heading else 85)
+        wrapped = split_text_to_fit(clean_l, max_length=75 if is_heading else 85)
         
         for w_line in wrapped:
             if y > 760:
@@ -545,19 +548,20 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 y = 70
                 
             if is_ar:
-                t_len = measure_arabic_length(w_line, font_alias, fontsize=font_sz)
-                render_arabic_line(page, fitz.Point(545 - t_len, y), w_line, font_alias, fontsize=font_sz, color=font_col)
+                b_line = format_arabic(w_line)
+                t_len = get_font_length(b_line, fontsize=font_sz)
+                page.insert_text(fitz.Point(545 - t_len, y), b_line, fontname="arab", fontsize=font_sz, color=font_col)
             else:
                 page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
             y += (font_sz + 4)
             
-        y += 4
+        y += 6
 
-    output = io.BytesIO()
-    doc.save(output)
+    out = io.BytesIO()
+    doc.save(out)
     doc.close()
-    output.seek(0)
-    return output
+    out.seek(0)
+    return out
 
 # ==========================================
 # الأحداث والتفاعل
@@ -714,7 +718,7 @@ async def process_lab_input(message: types.Message, state: FSMContext):
         f"قم بصياغة تقرير مختبري جامعي رسمي مفصل باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
         "مهم جداً: اكتب المعادلات الرياضية بصيغة نصية واضحة وتجنب تماماً استخدام رموز LaTeX مثل \\frac و \\tag و $$ و [ ] لتكون مقروءة ومرتبة.\n"
         "نظم بيانات النتائج في جداول Markdown منسقة واضحة.\n"
-        "يجب أن يكون التقرير شاملاً ومفصلاً جداً ليمتد على عدة صفحات، ويشمل:\n"
+        "يجب أن يكون التقرير طويلاً وشاملاً ومفصلاً ليمتد على 4 صفحات على الأقل، ويشمل:\n"
         "1. Abstract & Introduction\n"
         "2. Theoretical Background & Mathematical Equations (مع توضيح الرموز)\n"
         "3. Apparatus & Materials Used\n"
@@ -748,7 +752,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
     content = data.get("lab_report", "")
     fmt = callback.data
     
-    status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والجداول...**")
+    status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والجداول الأكاديمية...**")
     stop_event = asyncio.Event()
     counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات التقرير المتعددة", stop_event))
     
@@ -758,7 +762,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
         stop_event.set()
         counter_task.cancel()
         await status_msg.delete()
-        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع الجداول المنسقة!")
+        await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع العناوين والجداول المنسقة!")
     elif fmt == "fmt_docx":
         doc_io = io.BytesIO()
         if DocxDocument:
@@ -1092,7 +1096,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل مع الصندوق الأزرق والجداول المنسقة...")
+    logging.info("🚀 المنصة الأكاديمية تعمل مع الصندوق الأزرق المريح والجداول المنسقة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
