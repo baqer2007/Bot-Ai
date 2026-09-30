@@ -17,8 +17,10 @@ from bidi.algorithm import get_display
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = "7143420501:AAHCwidQ6V-d6jUNG9rHB_6lrSW9LjOMjEs"
-# يجلب المفتاح الذي وضعته في Render (سواء أبقيت اسمه القديم أو غيرته)
-API_KEY = os.environ.get("OPENROUTER_API_KEY", os.environ.get("GITHUB_TOKEN", ""))
+
+# جلب بيانات Cloudflare من إعدادات Render
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 
 FONT_PATH = "Amiri-Regular.ttf"
 if not os.path.exists(FONT_PATH):
@@ -28,10 +30,10 @@ if not os.path.exists(FONT_PATH):
     except Exception as e:
         logging.error(f"Font download error: {e}")
 
-# التغيير الجوهري هنا: توجيه البوت إلى سيرفرات GitHub (Azure) بدلاً من OpenRouter
+# الاتصال المباشر بشبكة Cloudflare Edge
 client = AsyncOpenAI(
-    base_url="https://models.inference.ai.azure.com",
-    api_key=API_KEY.strip(),
+    base_url=f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
+    api_key=CF_API_TOKEN.strip(),
     timeout=60.0
 )
 
@@ -72,12 +74,12 @@ async def cb_about(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "settings")
 async def cb_settings(callback: types.CallbackQuery):
-    text = "⚙️ **الإعدادات:**\n\n🔹 **النموذج:** GPT-4o-Mini (سريع جداً)\n🔹 **حجم الخط العربي:** 7.5\n🔹 **الوضع:** ذكي (يتجاوز الأرقام للسرعة)\n\n*(الخدمة مدعومة عبر GitHub Students)*"
+    text = "⚙️ **الإعدادات:**\n\n🔹 **النموذج:** LLaMA 3.1 8B\n🔹 **حجم الخط العربي:** 7.5\n🔹 **الوضع:** ذكي سريع\n\n*(الخدمة مدعومة عبر شبكة Cloudflare العالمية)*"
     await callback.message.edit_text(text, reply_markup=get_main_menu())
     await callback.answer()
 
 async def translate_blocks(blocks_text: list) -> list:
-    if not blocks_text:
+    if not blocks_text or not CF_ACCOUNT_ID or not CF_API_TOKEN:
         return []
     
     prompt = "ترجم النصوص التالية إلى اللغة العربية بدقة أكاديمية. أعد كتابة الترجمة بنفس الترقيم بالضبط (رقم|| النص المترجم). لا تكتب أي مقدمات أو شروحات إضافية.\n\n"
@@ -85,9 +87,9 @@ async def translate_blocks(blocks_text: list) -> list:
         prompt += f"{i}|| {text}\n"
 
     try:
-        # استخدام نموذج gpt-4o-mini المتاح مجاناً للطلاب في GitHub
+        # استخدام نموذج Llama 3.1 المدعوم رسمياً من كلاودفلير
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="@cf/meta/llama-3.1-8b-instruct",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
@@ -109,8 +111,9 @@ async def translate_blocks(blocks_text: list) -> list:
                         translated_results[idx] = parts[1].strip()
         
         return translated_results
+        
     except Exception as e:
-        logging.error(f"Translation Error: {e}")
+        logging.error(f"Translation Error via Cloudflare: {e}")
         return ["" for _ in blocks_text]
 
 def split_text_to_fit(text, max_length=95):
@@ -207,7 +210,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة بواسطة ذكاء اصطناعي متطور ⏳")
+    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر عبر خوادم Cloudflare ⏳")
 
     try:
         pdf_io = io.BytesIO()
@@ -222,7 +225,7 @@ async def handle_pdf(message: types.Message):
         await status_msg.delete()
         await message.answer_document(
             document=to_send,
-            caption="✅ تمت الترجمة والتنسيق بنجاح!",
+            caption="✅ تمت الترجمة والتنسيق بنجاح! احتفظ بهذا الملف.",
             reply_markup=get_main_menu()
         )
 
@@ -248,7 +251,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بكامل الميزات وبدون حدود...")
+    logging.info("🚀 البوت يعمل الآن بقوة Cloudflare Workers AI...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
