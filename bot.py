@@ -24,8 +24,11 @@ KEYS_STRING = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_A
 API_KEYS = [k.strip() for k in KEYS_STRING.split(",") if k.strip()]
 
 FONT_PATH = "Amiri-Regular.ttf"
-if not os.path.exists(FONT_PATH):
+
+# فحص ذكي للخط: التأكد من وجوده وأن حجمه منطقي (أكبر من 50 كيلوبايت) لتجنب الملفات التالفة
+if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 50000:
     try:
+        logging.info("Downloading Arabic Font correctly...")
         urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", FONT_PATH)
     except Exception as e:
         logging.error(f"Font download error: {e}")
@@ -51,7 +54,7 @@ def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 بحث في الأرشيف", callback_data="cmd_search")],
         [InlineKeyboardButton(text="📖 قاموس هندسة النفط", callback_data="cmd_dict")],
-        [InlineKeyboardButton(text="ℹ️ حول البوت", callback_data="cmd_about")]
+        [InlineKeyboardButton(text="ℹ️️ حول البوت", callback_data="cmd_about")]
     ])
 
 def get_pdf_actions():
@@ -62,7 +65,6 @@ def get_pdf_actions():
         [InlineKeyboardButton(text="💾 حفظ في أرشيف القسم", callback_data="action_archive")]
     ])
 
-# دالة ذكية لإرسال الرسائل الطويلة جداً وتجاوز خطأ MESSAGE_TOO_LONG
 async def send_long_message(msg: types.Message, text: str, parse_mode=None):
     if not text:
         await msg.answer("❌ لا يوجد محتوى لعرضه.")
@@ -111,12 +113,17 @@ async def translate_blocks(blocks_text: list) -> list:
                 translated_results[int(num_str)] = parts[1].strip()
     return translated_results
 
-# إصلاح دالة الغلاف 
 def add_academic_cover(doc: fitz.Document, filename: str):
     doc.insert_page(0, width=595, height=842)
-    page = doc[0] # الإصلاح هنا: استدعاء كائن الصفحة بدلاً من المتغير الرقمي
-    page.insert_font(fontname="amiri", fontfile=FONT_PATH)
+    page = doc[0] 
     
+    # استخدام اسم قياسي للخط لتجنب أخطاء PyMuPDF
+    font_key = "arab"
+    if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
+        page.insert_font(fontname=font_key, fontfile=FONT_PATH)
+    else:
+        font_key = "helv"
+        
     texts = [
         ("جامعة كربلاء - كلية الهندسة", 24, 150),
         ("قسم هندسة النفط", 20, 200),
@@ -128,9 +135,9 @@ def add_academic_cover(doc: fitz.Document, filename: str):
     for text, size, y in texts:
         reshaped = arabic_reshaper.reshape(text)
         bidi_text = get_display(reshaped)
-        text_length = fitz.get_text_length(bidi_text, fontname="amiri", fontsize=size)
+        text_length = fitz.get_text_length(bidi_text, fontname=font_key, fontsize=size)
         x = (595 - text_length) / 2 
-        page.insert_text(fitz.Point(x, y), bidi_text, fontname="amiri", fontsize=size, color=(0.1, 0.2, 0.5))
+        page.insert_text(fitz.Point(x, y), bidi_text, fontname=font_key, fontsize=size, color=(0.1, 0.2, 0.5))
 
 def split_text_to_fit(text, max_length=85):
     words = text.split()
@@ -146,9 +153,7 @@ def split_text_to_fit(text, max_length=85):
 
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    font_to_use = "amiri" if os.path.exists(FONT_PATH) else "helv"
     
-    # تحديد النطاق بشكل صحيح وآمن
     pages_to_keep = [i for i in range(len(doc)) if start_page <= i <= end_page]
     if pages_to_keep:
         doc.select(pages_to_keep)
@@ -156,10 +161,17 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
     add_academic_cover(doc, filename)
     total_pages = len(doc) - 1 
     
+    font_key = "arab"
+    valid_font = os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000
+
     for page_idx in range(1, len(doc)):
         await update_progress(status_msg, page_idx, total_pages, "جاري ترجمة وتنسيق الصفحات")
         page = doc[page_idx]
-        if font_to_use == "amiri": page.insert_font(fontname="amiri", fontfile=FONT_PATH)
+        
+        if valid_font:
+            page.insert_font(fontname=font_key, fontfile=FONT_PATH)
+        else:
+            font_key = "helv"
 
         blocks = page.get_text("blocks")
         text_blocks, valid_coords = [], []
@@ -194,12 +206,12 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                         reshaped = arabic_reshaper.reshape(w_line)
                         bidi_text = get_display(reshaped)
                         
-                        t_len = fitz.get_text_length(bidi_text, fontname=font_to_use, fontsize=8.0)
+                        t_len = fitz.get_text_length(bidi_text, fontname=font_key, fontsize=8.0)
                         centered_x = x0 + (block_width - t_len) / 2
                         insert_x = centered_x if centered_x > x0 else x0
                         
                         page.insert_text(fitz.Point(insert_x, min(y_offset, page.rect.height - 5)), 
-                                         bidi_text, fontname=font_to_use, fontsize=8.0, color=(0.1, 0.2, 0.6))
+                                         bidi_text, fontname=font_key, fontsize=8.0, color=(0.1, 0.2, 0.6))
                         y_offset += 10
             except Exception as e:
                  logging.error(f"Error processing arabic text: {e}")
@@ -306,7 +318,6 @@ async def process_action(callback: types.CallbackQuery, state: FSMContext):
             await bot.download_file(file.file_path, destination=pdf_io)
             doc = fitz.open(stream=pdf_io.getvalue(), filetype="pdf")
             
-            # استخراج النص من أول 5 صفحات للتلخيص
             text_to_summarize = ""
             for i in range(min(5, len(doc))):
                 text_to_summarize += doc[i].get_text()
@@ -395,7 +406,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بكامل الخدمات... تم إصلاح مشكلة الغلاف والرسائل الطويلة!")
+    logging.info("🚀 البوت يعمل الآن.. تم إصلاح ملف الخط العربي!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
