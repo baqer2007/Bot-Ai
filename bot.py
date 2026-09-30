@@ -74,7 +74,7 @@ async def cb_about(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "settings")
 async def cb_settings(callback: types.CallbackQuery):
-    text = "⚙️ **الإعدادات:**\n\n🔹 **النموذج:** LLaMA 3.1 8B\n🔹 **حجم الخط العربي:** 7.5\n🔹 **الوضع:** ذكي سريع\n\n*(الخدمة مدعومة عبر شبكة Cloudflare العالمية)*"
+    text = "⚙️ **الإعدادات:**\n\n🔹 **النموذج:** LLaMA 3.2 3B (الإصدار الأحدث والأسرع)\n🔹 **حجم الخط العربي:** 7.5\n🔹 **الوضع:** ذكي سريع\n\n*(الخدمة مدعومة عبر شبكة Cloudflare العالمية)*"
     await callback.message.edit_text(text, reply_markup=get_main_menu())
     await callback.answer()
 
@@ -87,9 +87,9 @@ async def translate_blocks(blocks_text: list) -> list:
         prompt += f"{i}|| {text}\n"
 
     try:
-        # استخدام نموذج Llama 3.1 المدعوم رسمياً من كلاودفلير
+        # التحديث هنا: استخدام نموذج Llama 3.2 الأحدث
         response = await client.chat.completions.create(
-            model="@cf/meta/llama-3.1-8b-instruct",
+            model="@cf/meta/llama-3.2-3b-instruct",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
@@ -210,7 +210,7 @@ async def handle_pdf(message: types.Message):
         await message.answer("⚠️ يرجى إرسال ملف بصيغة PDF فقط.")
         return
 
-    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر عبر خوادم Cloudflare ⏳")
+    status_msg = await message.answer("📥 استلمت الملف... جاري الترجمة وتنسيق الأسطر عبر Cloudflare AI ⏳")
 
     try:
         pdf_io = io.BytesIO()
@@ -251,7 +251,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    logging.info("🚀 البوت يعمل الآن بقوة Cloudflare Workers AI...")
+    logging.info("🚀 البوت يعمل الآن بقوة Cloudflare Workers AI والأصدار الحديث...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
