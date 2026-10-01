@@ -65,7 +65,6 @@ def ensure_font_downloaded():
 
 ensure_font_downloaded()
 
-# إلغاء المحاولات التلقائية للمكتبة، لتولي إدارتها برمجياً مع تأخير زمني طويل
 clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=60.0, max_retries=0) for key in API_KEYS]
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -190,7 +189,7 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
     step = 0
     while not stop_event.is_set():
         try:
-            await asyncio.sleep(6.0) # إبطاء التحديث لحماية البوت من الحظر نهائيا
+            await asyncio.sleep(6.0) 
             if stop_event.is_set(): break
             elapsed = int(time.time() - start_time)
             frame = frames[step % len(frames)]
@@ -261,7 +260,7 @@ async def ai_request_with_retry(prompt: str, retries=6) -> str:
     """خوارزمية محاولة متصاعدة لا تستسلم وتضمن وصول الترجمة"""
     if not clients: return "لم يتم ضبط مفاتيح OpenRouter."
     
-    delay = 12.0 # بدء انتظار طويل نسبياً لحماية الحساب
+    delay = 12.0 
     for attempt in range(retries):
         for client in clients:
             try:
@@ -273,7 +272,6 @@ async def ai_request_with_retry(prompt: str, retries=6) -> str:
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                # إذا ظهر خطأ 429 نقوم بالانتظار لفترة طويلة ومضاعفتها لضمان فك الحظر
                 if "429" in str(e) or "Too Many" in str(e) or "timeout" in str(e).lower():
                     logging.warning(f"تم تقييد الطلب. محاولة {attempt+1}/{retries}. الانتظار {delay} ثانية...")
                     await asyncio.sleep(delay)
@@ -365,7 +363,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
             percent = int((idx / max(1, total_pages)) * 100)
             bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
             elapsed = int(time.time() - start_time)
-            # تقليل التحديثات للحد الأدنى
             if idx % 3 == 0 or idx == total_pages:
                 await status_msg.edit_text(
                     f"⏳ **(وضع الدقة العالية) جاري ترجمة وبناء المحاضرة...**\n\n"
@@ -381,11 +378,9 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
 
         src_page = src_doc[page_num]
         
-        # استخراج الجداول
         tables = src_page.find_tables()
         table_rects = [tab.bbox for tab in tables] if tables else []
         
-        # استخراج النصوص
         blocks = src_page.get_text("blocks")
         text_blocks = []
         valid_coords = []
@@ -402,17 +397,14 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
 
         translations = await translate_blocks(text_blocks) if text_blocks else []
         
-        # انتظار مقصود لحماية النظام من الانهيار (Rate Limiting)
         await asyncio.sleep(3.0) 
         
         new_page = out_doc.new_page(width=595, height=842)
         prepare_page_font(new_page)
         
-        # ترويسة
         new_page.draw_line(fitz.Point(40, 40), fitz.Point(555, 40), color=(0.7, 0.7, 0.7), width=0.8)
         new_page.insert_text(fitz.Point(45, 35), f"Petroleum Engineering Dept | Page {idx}", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
         
-        # تذييل
         new_page.draw_line(fitz.Point(40, 805), fitz.Point(555, 805), color=(0.7, 0.7, 0.7), width=0.8)
         wm_txt = format_arabic("قسم هندسة النفط - جامعة كربلاء")
         t_len = get_font_length(wm_txt, 9)
@@ -440,7 +432,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 txt = el['text']
                 i = el['idx']
                 
-                # كتابة النص الإنجليزي بخط مريح
                 en_lines = split_text_to_fit(txt, max_length=95)
                 for en_l in en_lines:
                     if y_cursor > 770:
@@ -450,11 +441,10 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     new_page.insert_text(fitz.Point(45, y_cursor), en_l, fontname="helv", fontsize=9.5, color=(0.12, 0.12, 0.12))
                     y_cursor += 14
 
-                # الترجمة العربية أسفل النص الإنجليزي في صندوق أنيق
                 if i < len(translations) and translations[i]:
                     ar_raw = translations[i].strip()
                     if ar_raw and ar_raw != txt:
-                        ar_lines = split_text_to_fit(ar_raw, max_length=70) # تضييق النطاق لضمان عدم الخروج
+                        ar_lines = split_text_to_fit(ar_raw, max_length=70)
                         y_cursor += 4
                         box_height = len(ar_lines) * 16 + 10
                         
@@ -463,16 +453,16 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                             prepare_page_font(new_page)
                             y_cursor = 65
 
-                        # رسم الصندوق الأزرق بهامش مضبوط
+                        # صندوق زوايا حادة خالي من الأخطاء (radius محذوف)
                         box_rect = fitz.Rect(45, y_cursor - 4, 545, y_cursor + box_height - 6)
-                        new_page.draw_rect(box_rect, color=(0.25, 0.45, 0.8), fill=(0.95, 0.97, 1.0), width=1.0, radius=3)
+                        new_page.draw_rect(box_rect, color=(0.25, 0.45, 0.8), fill=(0.95, 0.97, 1.0), width=1.0)
                         
                         cur_y = y_cursor + 12
                         for a_l in ar_lines:
                             try:
                                 bidi_line = format_arabic(a_l)
                                 line_len = get_font_length(bidi_line, 9.0)
-                                x_target = max(55, 535 - line_len) # محاذاة يسارية/وسطية آمنة
+                                x_target = max(55, 535 - line_len)
                                 try:
                                     new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontname="arab", fontsize=9.0, color=(0.05, 0.15, 0.55))
                                 except:
@@ -508,7 +498,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                         cell_txt = clean_math_text(cell.strip())
                         
                         try:
-                            # نصوص إنجليزية والرياضية تطبع كما هي، العربية تعامل كعربي
                             if any('\u0600' <= char <= '\u06FF' for char in cell_txt):
                                 bidi_cell = format_arabic(cell_txt)
                                 try:
@@ -703,7 +692,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
         font_col = (0.05, 0.15, 0.45) if is_heading else (0.12, 0.12, 0.12)
         
         is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_l)
-        wrapped = split_text_to_fit(clean_l, max_length=70 if is_heading else 85)
+        wrapped = split_text_to_fit(clean_l, max_length=75 if is_heading else 85)
         
         for w_line in wrapped:
             if y > 760:
@@ -743,7 +732,7 @@ async def handle_start(message: types.Message, state: FSMContext):
     db_conn.commit()
     
     if not is_bot_active() and not is_admin(message.from_user.id):
-        await message.answer("⚠️ **البوت حالياً تحت الصيانة الدورية.** يرجى المحاولة لاحقاً.")
+        await message.answer("⚠️️ **البوت حالياً تحت الصيانة الدورية.** يرجى المحاولة لاحقاً.")
         return
         
     text = (
@@ -764,7 +753,7 @@ async def cb_about(callback: types.CallbackQuery, state: FSMContext):
     text = (
         "ℹ **حول المنصة الأكاديمية:**\n\n"
         "منصة تخصصية مخصصة لطلبة قسم هندسة النفط - جامعة كربلاء.\n"
-        "تدعم إعادة بناء وترجمة المناهج، صياغة تقارير المختبر الرسمية، محاكاة وتفسير المعادلات والرموز، وتحويل ملفات PowerPoint إلى صيغة PDF مباشرة."
+        "تدعم إعادة بناء وترجمة المناهج بدقة، صياغة تقارير المختبر الرسمية، محاكاة وتفسير المعادلات والرموز، وتحويل ملفات PowerPoint إلى صيغة PDF مباشرة."
     )
     await callback.message.edit_text(text, reply_markup=get_main_menu(callback.from_user.id))
     await callback.answer()
@@ -913,7 +902,7 @@ async def process_search_with_limit(callback: types.CallbackQuery, state: FSMCon
 @dp.callback_query(F.data == "cmd_lab")
 async def cb_lab_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_bot_active() and not is_admin(callback.from_user.id): return
-    await callback.message.edit_text("📝 **صياغة تقرير (بحث) مختبر أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
+    await callback.message.edit_text("📝 **صياغة تقرير بحثي مختبري أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
     await state.set_state(AppStates.waiting_for_lab_student_name)
     await callback.answer()
 
@@ -1001,8 +990,32 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
         await status_msg.delete()
         await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع العناوين والجداول المنسقة ولن يتوقف بصفحة واحدة!")
     elif fmt == "fmt_docx":
-        pass 
-
+        doc_io = io.BytesIO()
+        if DocxDocument:
+            doc = DocxDocument()
+            doc.add_heading(f"Report: {metadata['lab_title']}", 0)
+            doc.add_paragraph(f"Student Name: {metadata['name']}\nDepartment: {metadata['dept']}\nStage: {metadata['stage']} - {metadata['study_type']}")
+            doc.add_paragraph(clean_math_text(content))
+            doc.save(doc_io)
+            doc_io.seek(0)
+            doc_file = BufferedInputFile(doc_io.getvalue(), filename=f"Report_{metadata['lab_title']}.docx")
+            stop_event.set()
+            counter_task.cancel()
+            await status_msg.delete()
+            await callback.message.answer_document(doc_file, caption="📝 تم إنشاء المستند بصيغة Word الرسمية.")
+        else:
+            txt_file = BufferedInputFile(clean_math_text(content).encode("utf-8"), filename=f"Report_{metadata['lab_title']}.txt")
+            stop_event.set()
+            counter_task.cancel()
+            await status_msg.delete()
+            await callback.message.answer_document(txt_file, caption="📄 التقرير بصيغة نصية.")
+    else:
+        txt_file = BufferedInputFile(clean_math_text(content).encode("utf-8"), filename=f"Report_{metadata['lab_title']}.txt")
+        stop_event.set()
+        counter_task.cancel()
+        await status_msg.delete()
+        await callback.message.answer_document(txt_file, caption="📄 تم إنشاء ملف التقرير النصي.")
+        
     await callback.message.answer("العودة للقائمة الرئيسية:", reply_markup=get_main_menu(callback.from_user.id))
     await state.clear()
     await callback.answer()
@@ -1148,7 +1161,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف...**\n🛡️ تفعيل وضع (الدقة العالية والترجمة الآمنة)\n💡 يرجى الانتظار، قد تستغرق الملفات الكبيرة وقتاً طويلاً لضمان عدم ضياع التنسيق.")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بإعادة البناء الدقيق...**\n🛡️ يتم استخراج وتنسيق الجداول والنصوص بتسلسل عمودي.")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -1163,7 +1176,7 @@ async def run_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(
             document=to_send, 
-            caption="✅ تمت الترجمة بنجاح! تم بناء الملف بالكامل ليكون واضحاً ومرتباً وبدون أي تداخل في النصوص.",
+            caption="✅ تمت الترجمة بنجاح! تم بناء الملف بالكامل ليكون واضحاً ومرتباً مع الحفاظ على الجداول وترجمتها.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
@@ -1313,7 +1326,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل مع الدقة القصوى والحماية المستمرة...")
+    logging.info("🚀 المنصة الأكاديمية تعمل بخوارزمية الترجمة المتسلسلة والمبنية من الصفر للحفاظ على الجداول...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
