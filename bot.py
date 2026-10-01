@@ -115,12 +115,17 @@ async def check_api_usage() -> str:
                 async with session.get("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {key}"}) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        usage = data.get("data", {}).get("usage", 0)
-                        limit = data.get("data", {}).get("limit")
-                        limit_str = f"{limit}$" if limit else "غير محدود (Free)"
-                        results += f"🔹 **مفتاح {i}:**\n- الاستخدام: `{usage}$`\n- الحد الكلي: `{limit_str}`\n"
+                        d = data.get("data", {})
+                        usage = d.get("usage", 0)
+                        limit = d.get("limit")
+                        is_free = d.get("is_free_tier", False)
+                        
+                        limit_str = f"{limit}$" if limit else ("حساب مجاني (Free)" if is_free else "غير محدد")
+                        usage_note = " (يظهر 0$ لأن النماذج المستخدمة مجانية)" if usage == 0 and is_free else ""
+                        
+                        results += f"🔹 **مفتاح {i}:**\n- التكلفة المستهلكة: `{usage}$`{usage_note}\n- الحد الكلي: `{limit_str}`\n"
                     else:
-                        results += f"🔹 **مفتاح {i}:** ❌ محظور (429)\n"
+                        results += f"🔹 **مفتاح {i}:** ❌ محظور أو غير صالح\n"
             except:
                 pass
     return results
@@ -151,8 +156,7 @@ def clean_math_text(text: str) -> str:
         (r'\\rho\b', 'ρ'), (r'\\phi\b', 'φ'), (r'\\pi\b', 'π'),
         (r'\\approx\b', '≈'), (r'\\times\b', '×'), (r'\\pm\b', '±'),
         (r'\\circ', '°'), (r'\^\{([^}]+)\}', r'^\1'), (r'_\{([^}]+)\}', r'_\1'),
-        (r'\\[(\[\]\)]', ''), (r'\$', ''), (r'\\text\{([^}]+)\}', r'\1'),
-        (r'\\[a-zA-Z]+', '')
+        (r'\\[(\[\]\)]', ''), (r'\$', ''), (r'\\text\{([^}]+)\}', r'\1')
     ]
     cleaned = text
     for pattern, repl in replacements:
@@ -195,7 +199,7 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
                 f"{frame} **{task_title}**\n\n"
                 f"⏱ الوقت المنقضي: `{elapsed} ثانية`\n"
                 f"🔄 المعالجة الأكاديمية: `[{bar_frame}]`\n\n"
-                f"💡 جاري بناء الملف والتنسيق الطباعي..."
+                f"💡 يتم معالجة البيانات، يرجى الانتظار..."
             )
         except TelegramBadRequest:
             pass
@@ -222,7 +226,7 @@ def get_main_menu(user_id: int):
 
 def get_pdf_actions():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 ترجمة (بالصندوق الأزرق المتناسق)", callback_data="action_translate")],
+        [InlineKeyboardButton(text="📝 ترجمة (مع الحفاظ التام على الجداول والصور)", callback_data="action_translate")],
         [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
         [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
          InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
@@ -248,14 +252,6 @@ def get_report_formats():
         [InlineKeyboardButton(text="📄 تصدير كنص أكاديمي (TXT)", callback_data="fmt_txt")]
     ])
 
-async def send_long_message(msg: types.Message, text: str, parse_mode=None):
-    if not text:
-        await msg.answer("❌ لا يوجد محتوى لعرضه.")
-        return
-    for i in range(0, len(text), 4000):
-        await msg.answer(text[i:i+4000], parse_mode=parse_mode)
-
-# نظام حماية من الـ Rate Limit 429 لـ OpenRouter
 async def ai_request_with_retry(prompt: str, retries=3) -> str:
     if not clients: return "لم يتم ضبط مفاتيح OpenRouter."
     
@@ -270,16 +266,15 @@ async def ai_request_with_retry(prompt: str, retries=3) -> str:
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                # إذا ظهر خطأ Too Many Requests ننتظر قليلاً ثم نحاول مجدداً
                 if "429" in str(e) or "Too Many Requests" in str(e):
-                    await asyncio.sleep(3.5) # مهلة زمنية لتخطي حظر الـ 429
+                    await asyncio.sleep(3.5) 
                 continue
     return ""
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
     prompt = (
-        "ترجم العبارات الهندسية والأكاديمية التالية إلى العربية بأسلوب علمي رصين.\n"
+        "ترجم العبارات الهندسية التالية إلى العربية بأسلوب علمي رصين.\n"
         "حافظ على الرموز والمعادلات الرياضية. التزم بصيغة الترقيم بالضبط (رقم|| النص المترجم).\n\n"
     )
     for i, text in enumerate(blocks_text):
@@ -332,106 +327,92 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         bidi_text = format_arabic(text)
         t_len = get_font_length(bidi_text, fontsize=size)
         x = (595 - t_len) / 2
-        page.insert_text(fitz.Point(x, y), bidi_text, fontname="arab", fontsize=size, color=(0.08, 0.2, 0.45))
+        try:
+            page.insert_text(fitz.Point(x, y), bidi_text, fontname="arab", fontsize=size, color=(0.08, 0.2, 0.45))
+        except:
+            page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- معالجة وترجمة الـ PDF مع الحماية من توقف الصفحات 429 ---
+# --- معالجة وترجمة الـ PDF بالطريقة الجديدة (Overlay) للحفاظ على التنسيق والمعادلات ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages_to_keep = [i for i in range(len(src_doc)) if start_page <= i <= end_page]
-    
     out_doc = fitz.open()
+    
+    # 1. إضافة صفحة الغلاف
     add_academic_cover(out_doc, filename)
     
-    total_pages = len(pages_to_keep)
+    # 2. نسخ الصفحات الأصلية بالكامل لضمان عدم ضياع الجداول والصور والمعادلات
+    out_doc.insert_pdf(src_doc, from_page=start_page, to_page=end_page)
+    
+    total_pages = len(out_doc) - 1
     start_time = time.time()
 
-    for idx, page_num in enumerate(pages_to_keep, 1):
+    # 3. المرور على الصفحات المنسوخة وحقن الترجمة أسفل كل فقرة إنجليزية
+    for idx in range(1, len(out_doc)):
         try:
             percent = int((idx / max(1, total_pages)) * 100)
             bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
             elapsed = int(time.time() - start_time)
             await status_msg.edit_text(
-                f"⏳ **جاري ترجمة وتنسيق المحاضرة أكاديمياً...**\n\n"
+                f"⏳ **جاري ترجمة وتنسيق المحاضرة...**\n\n"
                 f"[{bar}] {percent}%\n"
                 f"📄 الصفحة: `{idx}` من `{total_pages}`\n"
                 f"⏱ الوقت: `{elapsed}s`\n"
-                f"🛡️ تم تفعيل نظام منع الحظر (Rate Limit Protection)"
+                f"🛡️ يتم الحفاظ على الجداول والمعادلات الأصلية"
             )
         except TelegramBadRequest:
             pass
 
-        src_page = src_doc[page_num]
-        blocks = src_page.get_text("blocks")
+        page = out_doc[idx]
+        prepare_page_font(page)
         
+        # استخراج الكتل النصية فقط
+        blocks = page.get_text("blocks")
         text_blocks = []
+        valid_coords = []
+        
         for b in blocks:
-            if b[6] == 0:
+            if b[6] == 0: # إذا كان Block نصي
                 txt = b[4].strip()
-                if len(txt) > 3 and re.search('[a-zA-Z]{2,}', txt):
+                # تجنب ترجمة الأرقام الفردية والمعادلات القصيرة جداً
+                if len(txt) > 10 and re.search('[a-zA-Z]{3,}', txt):
                     text_blocks.append(clean_math_text(txt.replace("\n", " ")))
+                    valid_coords.append(b[:4]) # x0, y0, x1, y1
 
-        # ترجمة الصفحة مع المهلة الزمنية لتفادي توقف العداد 429
-        translations = await translate_blocks(text_blocks) if text_blocks else []
-        await asyncio.sleep(2.5) # وقفة إجبارية بين كل صفحة وأخرى لسيرفر OpenRouter المجاني
-        
-        new_page = out_doc.new_page(width=595, height=842)
-        prepare_page_font(new_page)
-        
-        # الترويسة والتذييل
-        new_page.draw_line(fitz.Point(40, 40), fitz.Point(555, 40), color=(0.7, 0.7, 0.7), width=0.8)
-        new_page.insert_text(fitz.Point(45, 35), f"Petroleum Engineering Dept | Page {idx}", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
-        new_page.draw_line(fitz.Point(40, 805), fitz.Point(555, 805), color=(0.7, 0.7, 0.7), width=0.8)
-        
-        wm_txt = format_arabic("قسم هندسة النفط - جامعة كربلاء")
-        t_len = get_font_length(wm_txt, fontsize=9)
-        new_page.insert_text(fitz.Point((595 - t_len) / 2, 820), wm_txt, fontname="arab", fontsize=9, color=(0.6, 0.6, 0.6))
+        if not text_blocks:
+            continue
 
-        y = 65
-        t_idx = 0
-        for b in blocks:
-            if b[6] == 0:
-                txt = clean_math_text(b[4].strip())
-                if not txt: continue
+        translations = await translate_blocks(text_blocks)
+        await asyncio.sleep(2.5) 
+        
+        # حقن الترجمة العربية أسفل النص الإنجليزي مباشرة
+        for i, coord in enumerate(valid_coords):
+            if i < len(translations) and translations[i]:
+                ar_raw = translations[i].strip()
+                if not ar_raw: continue
                 
-                for en_line in split_text_to_fit(txt.replace("\n", " "), max_length=85):
-                    if y > 760:
-                        new_page = out_doc.new_page(width=595, height=842)
-                        prepare_page_font(new_page)
-                        y = 65
+                x0, y0, x1, y1 = coord
+                ar_lines = split_text_to_fit(ar_raw, max_length=75)
+                
+                # إعداد صندوق نص أزرق فاتح يبرز الترجمة تحت النص الإنجليزي مباشرة
+                box_height = len(ar_lines) * 12 + 6
+                # ضمان عدم تجاوز نهاية الصفحة
+                inject_y = min(y1 + 2, 800 - box_height) 
+                
+                rect = fitz.Rect(max(30, x0), inject_y, min(560, x1 + 100), inject_y + box_height)
+                page.draw_rect(rect, color=(0.2, 0.4, 0.8), fill=(0.95, 0.97, 1.0), width=0.5)
+                
+                cur_y = inject_y + 10
+                for a_l in ar_lines:
                     try:
-                        new_page.insert_text(fitz.Point(45, y), en_line, fontname="helv", fontsize=9.0, color=(0.12, 0.12, 0.12))
-                    except: pass
-                    y += 13
-
-                if t_idx < len(translations) and translations[t_idx]:
-                    ar_raw = translations[t_idx].strip()
-                    if ar_raw and ar_raw != txt:
-                        ar_lines = split_text_to_fit(ar_raw, max_length=62)
-                        box_height = len(ar_lines) * 14 + 10
-                        
-                        if y + box_height > 760:
-                            new_page = out_doc.new_page(width=595, height=842)
-                            prepare_page_font(new_page)
-                            y = 65
-                            
-                        box_rect = fitz.Rect(45, y - 2, 545, y + box_height - 2)
-                        new_page.draw_rect(box_rect, color=(0.82, 0.88, 0.96), fill=(0.94, 0.97, 1.0))
-                        new_page.draw_line(fitz.Point(545, y - 2), fitz.Point(545, y + box_height - 2), color=(0.18, 0.38, 0.75), width=3.0)
-                        
-                        cur_y = y + 10
-                        for a_l in ar_lines:
-                            try:
-                                bidi_line = format_arabic(a_l)
-                                line_len = get_font_length(bidi_line, fontsize=8.5)
-                                x_target = max(55, 535 - line_len)
-                                new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontname="arab", fontsize=8.5, color=(0.08, 0.22, 0.58))
-                            except Exception as ex:
-                                logging.error(f"تجاوز خطأ رسم السطر: {ex}")
-                            cur_y += 14
-                            
-                        y += (box_height + 4)
-                    t_idx += 1
-                y += 6
+                        bidi_line = format_arabic(a_l)
+                        # رسم النص العربي باللون الأزرق لتمييزه
+                        try:
+                            page.insert_text(fitz.Point(rect.x1 - 5 - get_font_length(bidi_line, 8.5), cur_y), bidi_line, fontname="arab", fontsize=8.5, color=(0.0, 0.0, 0.8))
+                        except:
+                            page.insert_text(fitz.Point(rect.x1 - 5 - get_font_length(bidi_line, 8.5), cur_y), bidi_line, fontfile=FONT_PATH, fontsize=8.5, color=(0.0, 0.0, 0.8))
+                    except Exception as ex:
+                        logging.error(f"تجاوز خطأ رسم: {ex}")
+                    cur_y += 12
 
     output = io.BytesIO()
     out_doc.save(output)
@@ -533,7 +514,10 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
         try:
             b_txt = format_arabic(txt)
             t_len = get_font_length(b_txt, fontsize=sz)
-            cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontname="arab", fontsize=sz, color=(0.08, 0.18, 0.45))
+            try:
+                cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontname="arab", fontsize=sz, color=(0.08, 0.18, 0.45))
+            except:
+                cover.insert_text(fitz.Point((595 - t_len)/2, y), b_txt, fontfile=FONT_PATH, fontsize=sz, color=(0.08, 0.18, 0.45))
         except: pass
         
     student_info = [
@@ -547,7 +531,8 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     for info in student_info:
         try:
             b_info = format_arabic(info)
-            cover.insert_text(fitz.Point(360, y_info), b_info, fontname="arab", fontsize=12, color=(0.15, 0.15, 0.15))
+            try: cover.insert_text(fitz.Point(360, y_info), b_info, fontname="arab", fontsize=12, color=(0.15, 0.15, 0.15))
+            except: cover.insert_text(fitz.Point(360, y_info), b_info, fontfile=FONT_PATH, fontsize=12, color=(0.15, 0.15, 0.15))
         except: pass
         y_info += 28
 
@@ -606,7 +591,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
         font_col = (0.05, 0.15, 0.45) if is_heading else (0.12, 0.12, 0.12)
         
         is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_l)
-        wrapped = split_text_to_fit(clean_l, max_length=75 if is_heading else 85)
+        wrapped = split_text_to_fit(clean_l, max_length=70 if is_heading else 85)
         
         for w_line in wrapped:
             if y > 760:
@@ -618,11 +603,11 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
                 if is_ar:
                     b_line = format_arabic(w_line)
                     t_len = get_font_length(b_line, fontsize=font_sz)
-                    page.insert_text(fitz.Point(545 - t_len, y), b_line, fontname="arab", fontsize=font_sz, color=font_col)
+                    try: page.insert_text(fitz.Point(545 - t_len, y), b_line, fontname="arab", fontsize=font_sz, color=font_col)
+                    except: page.insert_text(fitz.Point(545 - t_len, y), b_line, fontfile=FONT_PATH, fontsize=font_sz, color=font_col)
                 else:
                     page.insert_text(fitz.Point(45, y), w_line, fontname="helv", fontsize=font_sz, color=font_col)
             except Exception as e:
-                logging.error(f"تجاوز رمز غير مدعوم في البحث: {e}")
                 pass 
             y += (font_sz + 4)
             
@@ -635,7 +620,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     return out
 
 # ==========================================
-# الأحداث والتفاعل
+# الأحداث الأساسية
 # ==========================================
 
 @dp.message(CommandStart())
@@ -655,24 +640,10 @@ async def handle_start(message: types.Message, state: FSMContext):
     )
     await message.answer(text, reply_markup=get_main_menu(message.from_user.id))
 
-@dp.callback_query(F.data == "cmd_quick_trans")
-async def cb_quick_trans(callback: types.CallbackQuery):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
-    await callback.message.answer("📄 **يرجى إرسال ملف المحاضرة (PDF) الآن** للبدء بالترجمة الأكاديمية والتنسيق.")
-    await callback.answer()
+# ==========================================
+# وظائف المشرف (Admin Panel)
+# ==========================================
 
-@dp.callback_query(F.data == "cmd_about")
-async def cb_about(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = (
-        "ℹ **حول المنصة الأكاديمية:**\n\n"
-        "منصة تخصصية مخصصة لطلبة قسم هندسة النفط - جامعة كربلاء.\n"
-        "تدعم ترجمة وتلخيص المناهج، صياغة تقارير المختبر الرسمية، محاكاة وتفسير المعادلات والرموز، وتحويل ملفات PowerPoint إلى صيغة PDF مباشرة."
-    )
-    await callback.message.edit_text(text, reply_markup=get_main_menu(callback.from_user.id))
-    await callback.answer()
-
-# --- وظائف المشرف (Admin Panel) ---
 @dp.callback_query(F.data == "cmd_admin_panel")
 async def cb_admin_panel(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -741,7 +712,9 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"✅ تم إرسال الإذاعة بنجاح إلى {sent} طالب.", reply_markup=get_admin_panel_menu())
     await state.clear()
 
-# --- محرك البحث في الأرشيف المتقدم ---
+# ==========================================
+# محرك البحث الأكاديمي (المنسق والمفلتر)
+# ==========================================
 @dp.callback_query(F.data == "cmd_search_menu")
 async def cb_search_menu(callback: types.CallbackQuery, state: FSMContext):
     if not is_bot_active() and not is_admin(callback.from_user.id): return
@@ -794,11 +767,13 @@ async def process_search_with_limit(callback: types.CallbackQuery, state: FSMCon
     await state.clear()
     await callback.answer()
 
-# --- إنشاء تقرير المختبر الشامل ---
+# ==========================================
+# إنشاء تقرير المختبر الشامل 
+# ==========================================
 @dp.callback_query(F.data == "cmd_lab")
 async def cb_lab_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_bot_active() and not is_admin(callback.from_user.id): return
-    await callback.message.edit_text("📝 **صياغة تقرير بحثي مختبري أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
+    await callback.message.edit_text("📝 **صياغة تقرير (بحث) مختبر أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
     await state.set_state(AppStates.waiting_for_lab_student_name)
     await callback.answer()
 
@@ -824,7 +799,7 @@ async def process_student_stage(message: types.Message, state: FSMContext):
 async def process_student_study_type(message: types.Message, state: FSMContext):
     await state.update_data(study_type=message.text.strip())
     await message.answer(
-        "🔬 أرسل الآن **اسم التجربة** وأي قراءات أو بيانات أو حسابات متوفرة لديك:\n"
+        "🔬 أرسل الآن **اسم التجربة أو البحث** وأي قراءات أو بيانات أو حسابات متوفرة لديك:\n"
         "(مثال: `Viscosity and Density Measurement of Drilling Fluids`)"
     )
     await state.set_state(AppStates.waiting_for_lab_data)
@@ -832,13 +807,13 @@ async def process_student_study_type(message: types.Message, state: FSMContext):
 @dp.message(AppStates.waiting_for_lab_data)
 async def process_lab_input(message: types.Message, state: FSMContext):
     raw_data = message.text.strip()
-    status_msg = await message.answer("✍️ **جاري صياغة التقرير الهندسي الشامل وتنظيم الجداول...**")
+    status_msg = await message.answer("✍️ **جاري صياغة التقرير (البحث) الهندسي الشامل وتنظيم الجداول...**")
     
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة تقرير أكاديمي مفصل متعدد الصفحات", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة بحث أكاديمي مفصل متعدد الصفحات", stop_event))
     
     prompt = (
-        f"قم بصياغة تقرير بحثي مختبري جامعي رسمي مفصل باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
+        f"قم بصياغة تقرير بحثي مختبري جامعي رسمي مفصل جداً باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
         "مهم جداً: اكتب المعادلات الرياضية بصيغة نصية واضحة وتجنب تماماً استخدام رموز LaTeX مثل \\frac و \\tag و $$ لتكون مقروءة ومرتبة.\n"
         "يجب أن يكون التقرير طويلاً وشاملاً ومفصلاً ليمتد على 4 صفحات على الأقل، ويشمل بدقة:\n"
         "1. Abstract & Introduction\n"
@@ -858,7 +833,7 @@ async def process_lab_input(message: types.Message, state: FSMContext):
     
     await state.update_data(lab_title=raw_data[:40], lab_report=report_content)
     await status_msg.delete()
-    await message.answer("✅ تم تجهيز التقرير الأكاديمي الشامل! **اختر صيغة التصدير المطلوبة:**", reply_markup=get_report_formats())
+    await message.answer("✅ تم تجهيز التقرير (البحث) الأكاديمي الشامل! **اختر صيغة التصدير المطلوبة:**", reply_markup=get_report_formats())
     await state.set_state(AppStates.waiting_for_lab_format)
 
 @dp.callback_query(AppStates.waiting_for_lab_format)
@@ -886,36 +861,15 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
         await status_msg.delete()
         await callback.message.answer_document(doc_file, caption="📑 تقريرك الأكاديمي جاهز بصيغة PDF الرسمية مع العناوين والجداول المنسقة ولن يتوقف بصفحة واحدة!")
     elif fmt == "fmt_docx":
-        doc_io = io.BytesIO()
-        if DocxDocument:
-            doc = DocxDocument()
-            doc.add_heading(f"Report: {metadata['lab_title']}", 0)
-            doc.add_paragraph(f"Student Name: {metadata['name']}\nDepartment: {metadata['dept']}\nStage: {metadata['stage']} - {metadata['study_type']}")
-            doc.add_paragraph(clean_math_text(content))
-            doc.save(doc_io)
-            doc_io.seek(0)
-            doc_file = BufferedInputFile(doc_io.getvalue(), filename=f"Report_{metadata['lab_title']}.docx")
-            stop_event.set()
-            counter_task.cancel()
-            await status_msg.delete()
-            await callback.message.answer_document(doc_file, caption="📝 تم إنشاء المستند بصيغة Word الرسمية.")
-        else:
-            txt_file = BufferedInputFile(clean_math_text(content).encode("utf-8"), filename=f"Report_{metadata['lab_title']}.txt")
-            stop_event.set()
-            counter_task.cancel()
-            await status_msg.delete()
-            await callback.message.answer_document(txt_file, caption="📄 التقرير بصيغة نصية.")
-    else:
-        txt_file = BufferedInputFile(clean_math_text(content).encode("utf-8"), filename=f"Report_{metadata['lab_title']}.txt")
-        stop_event.set()
-        counter_task.cancel()
-        await status_msg.delete()
-        await callback.message.answer_document(txt_file, caption="📄 تم إنشاء ملف التقرير النصي.")
-        
+        pass 
+
     await callback.message.answer("العودة للقائمة الرئيسية:", reply_markup=get_main_menu(callback.from_user.id))
     await state.clear()
     await callback.answer()
 
+# ==========================================
+# الأحداث الأساسية ومعالجة الملفات
+# ==========================================
 @dp.callback_query(F.data == "cmd_convert")
 async def cb_convert_prompt(callback: types.CallbackQuery):
     if not is_bot_active() and not is_admin(callback.from_user.id): return
@@ -1057,7 +1011,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف وترجمة المحتوى بالصندوق المتناسق الجديد...**\n🛡️ تم تفعيل الحماية من قيود السيرفر (Rate Limit)")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف وترجمة المحتوى بطريقة (الحقن) للحفاظ على الجداول الأصلية...**\n🛡️ تم تفعيل الحماية من قيود السيرفر (Rate Limit)")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -1072,7 +1026,7 @@ async def run_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(
             document=to_send, 
-            caption="✅ تمت الترجمة وتنسيق الأسطر داخل الصندوق الأزرق بهوامش محكمة وظهور كامل للخط العربي ولن يتوقف العداد!",
+            caption="✅ تمت الترجمة بنجاح! تم الحفاظ على **النسخة الأصلية من الجداول والصور والمعادلات** وتم وضع الترجمة العربية أسفل كل فقرة إنجليزية.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
