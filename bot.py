@@ -65,8 +65,24 @@ def ensure_font_downloaded():
 
 ensure_font_downloaded()
 
-# تهيئة جميع العملاء (المفاتيح) بدون إعادة محاولة داخلية لنتحكم بها نحن
-clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=40.0, max_retries=0) for key in API_KEYS]
+# --- نظام الحجر الصحي الذكي للمفاتيح (Smart Key Manager) ---
+class KeyManager:
+    def __init__(self, api_keys):
+        self.api_keys = api_keys
+        # تسجيل وقت انتهاء الحظر لكل مفتاح (0.0 يعني متاح فوراً)
+        self.key_cooldowns = {k: 0.0 for k in api_keys}
+
+    def get_available_key(self):
+        now = time.time()
+        for k in self.api_keys:
+            if now >= self.key_cooldowns[k]:
+                return k
+        return None 
+        
+    def set_cooldown(self, key, seconds):
+        self.key_cooldowns[key] = time.time() + seconds
+
+key_manager = KeyManager(API_KEYS)
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
@@ -149,6 +165,7 @@ def get_admin_settings_menu():
     ])
 
 def clean_math_text(text: str) -> str:
+    """تنظيف احترافي لرموز الرياضيات لتظهر بشكل جميل ومقروء"""
     if not text: return ""
     replacements = [
         (r'\\frac\{([^}]+)\}\{([^}]+)\}', r'(\1 / \2)'),
@@ -189,7 +206,7 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
     step = 0
     while not stop_event.is_set():
         try:
-            await asyncio.sleep(5.0) 
+            await asyncio.sleep(6.0) 
             if stop_event.is_set(): break
             elapsed = int(time.time() - start_time)
             frame = frames[step % len(frames)]
@@ -199,8 +216,8 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
             await status_msg.edit_text(
                 f"{frame} **{task_title}**\n\n"
                 f"⏱ الوقت المستغرق: `{elapsed} ثانية`\n"
-                f"🔄 المعالجة الأكاديمية الدقيقة: `[{bar_frame}]`\n\n"
-                f"💡 يتم تبديل المفاتيح تلقائياً لتسريع الترجمة..."
+                f"🔄 المعالجة الذكية: `[{bar_frame}]`\n\n"
+                f"💡 يتم تفعيل نظام (توزيع الأحمال الذكي) للترجمة..."
             )
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
@@ -229,7 +246,7 @@ def get_main_menu(user_id: int):
 
 def get_pdf_actions():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 ترجمة دقيقة (إعادة بناء شاملة)", callback_data="action_translate")],
+        [InlineKeyboardButton(text="📝 ترجمة متقدمة (نظام الأحمال الذكي)", callback_data="action_translate")],
         [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
         [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
          InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
@@ -255,36 +272,39 @@ def get_report_formats():
         [InlineKeyboardButton(text="📄 تصدير كنص أكاديمي (TXT)", callback_data="fmt_txt")]
     ])
 
-# --- خوارزمية (Round-Robin) للاستفادة القصوى من الـ 4 مفاتيح ---
-async def ai_request_with_retry(prompt: str, retries=4) -> str:
-    if not clients: return "لم يتم ضبط مفاتيح OpenRouter."
+# --- خوارزمية الاتصال المعززة بموزع الأحمال (Smart Load Balancer) ---
+async def ai_request_with_retry(prompt: str, retries=8) -> str:
+    if not API_KEYS: return "لم يتم ضبط مفاتيح OpenRouter."
     
-    delay = 6.0 
     for attempt in range(retries):
-        # المرور على جميع المفاتيح الأربعة فوراً دون انتظار
-        for i, client in enumerate(clients):
-            try:
-                response = await client.chat.completions.create(
-                    model="openrouter/free",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=3000,
-                )
-                return response.choices[0].message.content or ""
-            except Exception as e:
-                # إذا حُظر هذا المفتاح، انتقل للمفتاح التالي فوراً
-                if "429" in str(e) or "Too Many" in str(e) or "timeout" in str(e).lower():
-                    logging.info(f"المفتاح {i+1} محظور (429). الانتقال فوراً للمفتاح التالي...")
-                    continue
-                else:
-                    continue
-                    
-        # إذا جربنا المفاتيح الأربعة كلها في هذه المحاولة وفشلت، ننتظر هنا فقط لفك الحظر
-        logging.warning(f"جميع المفاتيح الـ {len(clients)} محظورة مؤقتاً! انتظار {delay} ثانية (محاولة {attempt+1}/{retries})")
-        await asyncio.sleep(delay)
-        delay += 4.0 
+        key = key_manager.get_available_key()
         
-    return "" 
+        # إذا كانت كل المفاتيح محظورة، ننتظر قليلاً ثم نحاول مجدداً
+        if not key:
+            logging.warning("جميع المفاتيح في الحجر الصحي. انتظار 5 ثوانٍ...")
+            await asyncio.sleep(5.0)
+            continue
+            
+        client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=45.0, max_retries=0)
+        
+        try:
+            response = await client.chat.completions.create(
+                model="openrouter/free",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=3000,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            # إذا حُظر هذا المفتاح نضعه في الحجر لمدة 20 ثانية لينتقل للمفتاح التالي فوراً
+            if "429" in str(e) or "Too Many" in str(e) or "timeout" in str(e).lower():
+                logging.info(f"تم حظر مفتاح. وضعه في الحجر لـ 20 ثانية.")
+                key_manager.set_cooldown(key, 20.0)
+            else:
+                key_manager.set_cooldown(key, 5.0)
+            continue
+            
+    return "" # إرجاع فارغ لتجنب الانهيار
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
@@ -314,7 +334,7 @@ async def translate_blocks(blocks_text: list) -> list:
 async def translate_single_text(text: str) -> str:
     if not text.strip() or len(text) < 2: return text
     prompt = f"ترجم النص التالي إلى العربية بدقة أكاديمية: '{text}'\nاكتب الترجمة فقط بدون أي إضافات."
-    res = await ai_request_with_retry(prompt, retries=2)
+    res = await ai_request_with_retry(prompt, retries=3)
     return clean_math_text(res) if res else text
 
 def split_text_to_fit(text, max_length=75):
@@ -353,7 +373,7 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         except:
             page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- المعالجة والترجمة البطيئة الدقيقة (High Accuracy Reconstruction) ---
+# --- المعالجة والترجمة الهندسية الدقيقة ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     out_doc = fitz.open()
@@ -370,11 +390,11 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
             elapsed = int(time.time() - start_time)
             if idx % 3 == 0 or idx == total_pages:
                 await status_msg.edit_text(
-                    f"⏳ **(وضع الدقة العالية والسرعة المضاعفة) جاري بناء المحاضرة...**\n\n"
+                    f"⏳ **جاري ترجمة وبناء المحاضرة (النظام الذكي)...**\n\n"
                     f"[{bar}] {percent}%\n"
                     f"📄 الصفحة: `{idx}` من `{total_pages}`\n"
                     f"⏱ الوقت: `{elapsed}s`\n"
-                    f"🛡️ يتم التنقل بين المفاتيح الـ 4 لتسريع المعالجة."
+                    f"🛡️ يتم فلترة الجداول، توزيع الأحمال على المفاتيح، ورسم الإحداثيات."
                 )
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
@@ -456,6 +476,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                             prepare_page_font(new_page)
                             y_cursor = 65
 
+                        # صندوق آمن بزوايا حادة
                         box_rect = fitz.Rect(45, y_cursor - 4, 545, y_cursor + box_height - 6)
                         new_page.draw_rect(box_rect, color=(0.25, 0.45, 0.8), fill=(0.94, 0.96, 1.0), width=1.0)
                         
@@ -1166,7 +1187,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بالبناء الأكاديمي الدقيق...**\n🛡️ وضع التناوب بين 4 مفاتيح لتسريع الترجمة وتفادي الحظر.")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بالبناء الأكاديمي الدقيق...**\n🛡️ يتم استخراج وتنسيق الجداول والنصوص بتسلسل عمودي ذكي بموزع الأحمال.")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -1331,7 +1352,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل مع نظام المحاذاة الدقيق والترجمة الآمنة...")
+    logging.info("🚀 المنصة الأكاديمية تعمل مع نظام الدقة العالية وموزع المفاتيح الذكي...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
