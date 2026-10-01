@@ -64,7 +64,8 @@ def ensure_font_downloaded():
 
 ensure_font_downloaded()
 
-clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=50.0) for key in API_KEYS]
+# تعطيل إعادة المحاولة الداخلية للمكتبة لتجنب رسائل 429 السريعة المتكررة
+clients = [AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=60.0, max_retries=0) for key in API_KEYS]
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
@@ -134,7 +135,7 @@ def get_admin_panel_menu():
         [InlineKeyboardButton(text="📊 الإحصائيات العامة", callback_data="admin_stats"),
          InlineKeyboardButton(text="🔑 استخدام المفاتيح", callback_data="admin_api")],
         [InlineKeyboardButton(text="📢 الإذاعة (Broadcast)", callback_data="admin_broadcast"),
-         InlineKeyboardButton(text="⚙️ إعدادات البوت", callback_data="admin_settings")],
+         InlineKeyboardButton(text="⚙️️ إعدادات البوت", callback_data="admin_settings")],
         [InlineKeyboardButton(text="🔙 العودة للقائمة الرئيسية", callback_data="cmd_start")]
     ])
 
@@ -187,7 +188,7 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
     step = 0
     while not stop_event.is_set():
         try:
-            await asyncio.sleep(4.0) 
+            await asyncio.sleep(5.0) 
             if stop_event.is_set(): break
             elapsed = int(time.time() - start_time)
             frame = frames[step % len(frames)]
@@ -196,9 +197,9 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
             step += 1
             await status_msg.edit_text(
                 f"{frame} **{task_title}**\n\n"
-                f"⏱ الوقت المنقضي: `{elapsed} ثانية`\n"
+                f"⏱ الوقت المستغرق: `{elapsed} ثانية`\n"
                 f"🔄 المعالجة الأكاديمية: `[{bar_frame}]`\n\n"
-                f"💡 يتم معالجة البيانات بأمان، يرجى الانتظار..."
+                f"💡 يتم بناء الملف خطوة بخطوة..."
             )
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
@@ -227,7 +228,7 @@ def get_main_menu(user_id: int):
 
 def get_pdf_actions():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 ترجمة دقيقة (إعادة بناء أكاديمية)", callback_data="action_translate")],
+        [InlineKeyboardButton(text="📝 ترجمة شاملة (إعادة بناء أكاديمي للملف)", callback_data="action_translate")],
         [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
         [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
          InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
@@ -253,10 +254,10 @@ def get_report_formats():
         [InlineKeyboardButton(text="📄 تصدير كنص أكاديمي (TXT)", callback_data="fmt_txt")]
     ])
 
-async def ai_request_with_retry(prompt: str, retries=4) -> str:
+async def ai_request_with_retry(prompt: str, retries=5) -> str:
     if not clients: return "لم يتم ضبط مفاتيح OpenRouter."
     
-    delay = 3.5 
+    delay = 10.0 # انتظار طويل لتجنب الرفض المستمر (429)
     for attempt in range(retries):
         for client in clients:
             try:
@@ -269,15 +270,18 @@ async def ai_request_with_retry(prompt: str, retries=4) -> str:
                 return response.choices[0].message.content or ""
             except Exception as e:
                 if "429" in str(e) or "Too Many" in str(e):
+                    logging.warning(f"Rate limit 429. Waiting {delay} seconds...")
                     await asyncio.sleep(delay)
-                    delay *= 1.5 
+                    delay += 5.0 
+                else:
+                    await asyncio.sleep(3.0)
                 continue
     return "" 
 
 async def translate_blocks(blocks_text: list) -> list:
     if not blocks_text: return []
     prompt = (
-        "ترجم العبارات والفقرات الهندسية التالية إلى العربية بأسلوب علمي رصين.\n"
+        "ترجم العبارات الهندسية التالية إلى العربية بأسلوب علمي رصين.\n"
         "حافظ على الرموز والمعادلات الرياضية. التزم بصيغة الترقيم بالضبط (رقم|| النص المترجم).\n\n"
     )
     for i, text in enumerate(blocks_text):
@@ -302,10 +306,10 @@ async def translate_blocks(blocks_text: list) -> list:
 async def translate_single_text(text: str) -> str:
     if not text.strip() or len(text) < 2: return text
     prompt = f"ترجم النص التالي إلى العربية بدقة أكاديمية: '{text}'\nاكتب الترجمة فقط بدون أي إضافات."
-    res = await ai_request_with_retry(prompt, retries=2)
+    res = await ai_request_with_retry(prompt, retries=3)
     return clean_math_text(res) if res else text
 
-def split_text_to_fit(text, max_length=85):
+def split_text_to_fit(text, max_length=75):
     words = text.split()
     lines, current_line = [], ""
     for word in words:
@@ -341,7 +345,7 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         except:
             page.insert_text(fitz.Point(x, y), bidi_text, fontfile=FONT_PATH, fontsize=size, color=(0.08, 0.2, 0.45))
 
-# --- المعالجة والترجمة: نظام التدفق الرأسي الصارم (Strict Vertical Flow) ---
+# --- المعالجة والترجمة: إعادة بناء المستند كاملاً بـ "وضع الأكاديمية" الدقيق ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     out_doc = fitz.open()
@@ -362,7 +366,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     f"[{bar}] {percent}%\n"
                     f"📄 الصفحة: `{idx}` من `{total_pages}`\n"
                     f"⏱ الوقت: `{elapsed}s`\n"
-                    f"🛡️ نظام التنسيق الرأسي: الترجمة أسفل النص مباشرة..."
+                    f"🛡️ يتم معالجة وتنسيق النصوص والجداول بأمان..."
                 )
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
@@ -371,24 +375,22 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
 
         src_page = src_doc[page_num]
         
-        # استخراج الجداول من الصفحة الحالية
         tables = src_page.find_tables()
         table_rects = [tab.bbox for tab in tables] if tables else []
         
-        # استخراج الكتل النصية العادية
-        blocks = src_page.get_text("blocks")
+        blocks = src_page.get_text("dict")["blocks"]
         text_blocks = []
         valid_coords = []
         
         for b in blocks:
-            if b[6] == 0:
-                rect_b = fitz.Rect(b[:4])
+            if b["type"] == 0: 
+                rect_b = fitz.Rect(b["bbox"])
                 in_table = any(rect_b.intersects(t_rect) for t_rect in table_rects)
                 if not in_table:
-                    txt = b[4].strip()
+                    txt = " ".join([span["text"] for line in b["lines"] for span in line["spans"]]).strip()
                     if len(txt) > 3 and re.search('[a-zA-Z]{2,}', txt):
                         text_blocks.append(clean_math_text(txt.replace("\n", " ")))
-                        valid_coords.append(b[:4])
+                        valid_coords.append(b["bbox"])
 
         translations = await translate_blocks(text_blocks) if text_blocks else []
         await asyncio.sleep(2.0) 
@@ -396,7 +398,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         new_page = out_doc.new_page(width=595, height=842)
         prepare_page_font(new_page)
         
-        # الترويسة والتذييل
         new_page.draw_line(fitz.Point(40, 40), fitz.Point(555, 40), color=(0.7, 0.7, 0.7), width=0.8)
         new_page.insert_text(fitz.Point(45, 35), f"Petroleum Engineering Dept | Page {idx}", fontname="helv", fontsize=8, color=(0.4, 0.4, 0.4))
         new_page.draw_line(fitz.Point(40, 805), fitz.Point(555, 805), color=(0.7, 0.7, 0.7), width=0.8)
@@ -404,7 +405,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         t_len = get_font_length(wm_txt, 9)
         new_page.insert_text(fitz.Point((595 - t_len) / 2, 820), wm_txt, fontname="arab", fontsize=9, color=(0.6, 0.6, 0.6))
 
-        # المؤشر العمودي (Y-cursor) يتحكم بموقع الطباعة باستمرار
         y_cursor = 65
         t_idx = 0
         
@@ -417,7 +417,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
         elements.sort(key=lambda x: x['y0'])
 
         for el in elements:
-            if y_cursor > 760:
+            if y_cursor > 770:
                 new_page = out_doc.new_page(width=595, height=842)
                 prepare_page_font(new_page)
                 y_cursor = 65
@@ -426,7 +426,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 txt = el['text']
                 i = el['idx']
                 
-                # 1. طباعة النص الإنجليزي (سواء كان سطراً أو عدة أسطر)
                 en_lines = split_text_to_fit(txt, max_length=95)
                 for en_l in en_lines:
                     if y_cursor > 770:
@@ -436,22 +435,21 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     new_page.insert_text(fitz.Point(45, y_cursor), en_l, fontname="helv", fontsize=9.5, color=(0.12, 0.12, 0.12))
                     y_cursor += 14
 
-                # 2. طباعة الترجمة العربية أسفل النص الإنجليزي مباشرة داخل صندوق مميز
                 if i < len(translations) and translations[i]:
                     ar_raw = translations[i].strip()
                     if ar_raw and ar_raw != txt:
                         ar_lines = split_text_to_fit(ar_raw, max_length=80)
-                        y_cursor += 4
-                        box_height = len(ar_lines) * 16 + 8
+                        y_cursor += 2
                         
+                        # إزالة radius لمنع الخطأ البرمجي في Render
+                        box_height = len(ar_lines) * 15 + 8
                         if y_cursor + box_height > 780:
                             new_page = out_doc.new_page(width=595, height=842)
                             prepare_page_font(new_page)
                             y_cursor = 65
 
-                        # صندوق الخلفية للترجمة العربية
                         box_rect = fitz.Rect(45, y_cursor - 4, 545, y_cursor + box_height - 6)
-                        new_page.draw_rect(box_rect, color=(0.3, 0.5, 0.8), fill=(0.94, 0.96, 1.0), width=0.8, radius=3)
+                        new_page.draw_rect(box_rect, color=(0.3, 0.5, 0.8), fill=(0.94, 0.96, 1.0), width=0.8)
                         
                         cur_y = y_cursor + 10
                         for a_l in ar_lines:
@@ -464,9 +462,9 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                                 except:
                                     new_page.insert_text(fitz.Point(x_target, cur_y), bidi_line, fontfile=FONT_PATH, fontsize=9.0, color=(0.05, 0.15, 0.55))
                             except: pass
-                            cur_y += 16
+                            cur_y += 15
                         y_cursor += box_height + 4
-                y_cursor += 12 # مسافة بين الفقرة والأخرى
+                y_cursor += 12
                 
             elif el['type'] == 'table':
                 tab = el['table']
@@ -492,7 +490,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     for c_idx, cell in enumerate(row):
                         if not cell: continue
                         cell_txt = cell.strip()
-                        # ترجمة محتوى الخلايا النصية الإنجليزية للحفاظ على معنى الجدول
                         if re.search('[a-zA-Z]{3,}', cell_txt):
                             ar_cell = await translate_single_text(cell_txt)
                         else:
@@ -508,7 +505,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     y_cursor += 24
                 y_cursor += 15
                 
-        # إشعار الصور 
         if src_page.get_images():
             if y_cursor > 770:
                 new_page = out_doc.new_page(width=595, height=842)
@@ -691,7 +687,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
         font_col = (0.05, 0.15, 0.45) if is_heading else (0.12, 0.12, 0.12)
         
         is_ar = any('\u0600' <= char <= '\u06FF' for char in clean_l)
-        wrapped = split_text_to_fit(clean_l, max_length=75 if is_heading else 85)
+        wrapped = split_text_to_fit(clean_l, max_length=70 if is_heading else 85)
         
         for w_line in wrapped:
             if y > 760:
@@ -719,7 +715,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
     return out
 
 # ==========================================
-# الأحداث والتفاعل
+# الأحداث الأساسية
 # ==========================================
 
 @dp.message(CommandStart())
@@ -1159,7 +1155,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بإعادة البناء الدقيق...**\n🛡️ يتم استخراج وتنسيق الجداول والنصوص بتسلسل عمودي ذكي.")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بالبناء الأكاديمي الدقيق...**\n🛡️ يتم استخراج وتنسيق الجداول والنصوص بتسلسل عمودي ذكي.")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -1174,7 +1170,7 @@ async def run_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(
             document=to_send, 
-            caption="✅ تمت الترجمة بنجاح! تم إعادة بناء الملف بالكامل ليكون واضحاً ومرتباً مع الحفاظ على الجداول وترجمتها.",
+            caption="✅ تمت الترجمة بنجاح! تم بناء الملف بالكامل ليكون واضحاً، مع ترجمة شاملة للجداول والمحتوى بدقة.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
@@ -1324,7 +1320,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل بنظام الترجمة الموازية والمحاذاة العمودية...")
+    logging.info("🚀 المنصة الأكاديمية تعمل مع الدقة القصوى وإعادة بناء الجداول...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
