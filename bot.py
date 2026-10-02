@@ -21,10 +21,8 @@ from bidi.algorithm import get_display
 
 try:
     from pptx import Presentation
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
 except ImportError:
     Presentation = None
-    MSO_SHAPE_TYPE = None
 
 try:
     from docx import Document as DocxDocument
@@ -65,7 +63,6 @@ def ensure_font_downloaded():
 
 ensure_font_downloaded()
 
-# --- نظام الحجر الصحي الذكي للمفاتيح ---
 class KeyManager:
     def __init__(self, api_keys):
         self.api_keys = api_keys
@@ -163,6 +160,50 @@ def get_admin_settings_menu():
         [InlineKeyboardButton(text="🔙 رجوع للوحة الإدارة", callback_data="cmd_admin_panel")]
     ])
 
+def get_main_menu(user_id: int):
+    keyboard = [
+        [InlineKeyboardButton(text="📄 ترجمة هندسية دقيقة (PDF)", callback_data="cmd_quick_trans")],
+        [InlineKeyboardButton(text="🔍 بحث في الأرشيف الأكاديمي", callback_data="cmd_search_menu"),
+         InlineKeyboardButton(text="📖 قاموس هندسة النفط", callback_data="cmd_dict")],
+        [InlineKeyboardButton(text="🧮 حاسبة ومحول وحدات النفط", callback_data="cmd_calc"),
+         InlineKeyboardButton(text="📐 مفسر المعادلات والرموز", callback_data="cmd_formula")],
+        [InlineKeyboardButton(text="📝 إنشاء تقرير (بحث) أكاديمي", callback_data="cmd_lab"),
+         InlineKeyboardButton(text="🔄 تحويل PowerPoint إلى PDF", callback_data="cmd_convert")],
+        [InlineKeyboardButton(text="📅 الجدول والتبليغات الرسمية", callback_data="cmd_schedule"),
+         InlineKeyboardButton(text="ℹ حول المنصة", callback_data="cmd_about")]
+    ]
+    if is_admin(user_id):
+        keyboard.insert(0, [InlineKeyboardButton(text="👑 لوحة تحكم المشرف", callback_data="cmd_admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_pdf_actions():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 ترجمة هندسية (نظام الصفحات المزدوجة)", callback_data="action_translate")],
+        [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
+        [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
+         InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
+    ])
+
+def get_search_lang_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇮🇶 بحث باللغة العربية", callback_data="search_ar"),
+         InlineKeyboardButton(text="🇬🇧 Search in English", callback_data="search_en")]
+    ])
+
+def get_search_limit_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="عرض 3 ملفات", callback_data="limit_3"),
+         InlineKeyboardButton(text="عرض 5 ملفات", callback_data="limit_5"),
+         InlineKeyboardButton(text="عرض 10 ملفات", callback_data="limit_10")]
+    ])
+
+def get_report_formats():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📑 تصدير بتنسيق PDF رسمي", callback_data="fmt_pdf")],
+        [InlineKeyboardButton(text="📝 تصدير بتنسيق Word (DOCX)", callback_data="fmt_docx")],
+        [InlineKeyboardButton(text="📄 تصدير كنص أكاديمي (TXT)", callback_data="fmt_txt")]
+    ])
+
 def clean_math_text(text: str) -> str:
     if not text: return ""
     replacements = [
@@ -195,8 +236,7 @@ def prepare_page_font(page: fitz.Page):
     if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
         try:
             page.insert_font(fontname="arab", fontfile=FONT_PATH)
-        except Exception:
-            pass
+        except: pass
 
 async def run_live_counter(status_msg: types.Message, task_title: str, stop_event: asyncio.Event):
     start_time = time.time()
@@ -214,8 +254,8 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
             await status_msg.edit_text(
                 f"{frame} **{task_title}**\n\n"
                 f"⏱ الوقت المستغرق: `{elapsed} ثانية`\n"
-                f"🔄 المعالجة: `[{bar_frame}]`\n\n"
-                f"💡 يرجى الانتظار، جاري العمل بوضع الدقة والأمان..."
+                f"🔄 المعالجة الأكاديمية: `[{bar_frame}]`\n\n"
+                f"💡 يرجى الانتظار، جاري العمل..."
             )
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
@@ -226,50 +266,6 @@ async def run_live_counter(status_msg: types.Message, task_title: str, stop_even
         except Exception:
             pass
 
-def get_main_menu(user_id: int):
-    keyboard = [
-        [InlineKeyboardButton(text="📄 ترجمة هندسية دقيقة (PDF)", callback_data="cmd_quick_trans")],
-        [InlineKeyboardButton(text="🔍 بحث في الأرشيف الأكاديمي", callback_data="cmd_search_menu"),
-         InlineKeyboardButton(text="📖 قاموس هندسة النفط", callback_data="cmd_dict")],
-        [InlineKeyboardButton(text="🧮 حاسبة ومحول وحدات النفط", callback_data="cmd_calc"),
-         InlineKeyboardButton(text="📐 مفسر المعادلات والرموز", callback_data="cmd_formula")],
-        [InlineKeyboardButton(text="📝 إنشاء تقرير (بحث) أكاديمي", callback_data="cmd_lab"),
-         InlineKeyboardButton(text="🔄 تحويل PowerPoint إلى PDF", callback_data="cmd_convert")],
-        [InlineKeyboardButton(text="📅 الجدول والتبليغات الرسمية", callback_data="cmd_schedule"),
-         InlineKeyboardButton(text="ℹ حول المنصة", callback_data="cmd_about")]
-    ]
-    if is_admin(user_id):
-        keyboard.insert(0, [InlineKeyboardButton(text="👑 لوحة تحكم المشرف (Admin)", callback_data="cmd_admin_panel")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def get_pdf_actions():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 ترجمة هندسية (نظام الصفحات المزدوجة)", callback_data="action_translate")],
-        [InlineKeyboardButton(text="📑 تلخيص أكاديمي شامل", callback_data="action_summarize")],
-        [InlineKeyboardButton(text="📄 استخراج النصوص", callback_data="action_extract"),
-         InlineKeyboardButton(text="💾 أرشفة في مواد القسم", callback_data="action_archive")]
-    ])
-
-def get_search_lang_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇮🇶 بحث باللغة العربية", callback_data="search_ar"),
-         InlineKeyboardButton(text="🇬🇧 Search in English", callback_data="search_en")]
-    ])
-
-def get_search_limit_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="عرض 3 ملفات", callback_data="limit_3"),
-         InlineKeyboardButton(text="عرض 5 ملفات", callback_data="limit_5"),
-         InlineKeyboardButton(text="عرض 10 ملفات", callback_data="limit_10")]
-    ])
-
-def get_report_formats():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📑 تصدير بتنسيق PDF رسمي", callback_data="fmt_pdf")],
-        [InlineKeyboardButton(text="📝 تصدير بتنسيق Word (DOCX)", callback_data="fmt_docx")],
-        [InlineKeyboardButton(text="📄 تصدير كنص أكاديمي (TXT)", callback_data="fmt_txt")]
-    ])
-
 async def send_long_message(msg: types.Message, text: str, parse_mode=None):
     if not text:
         await msg.answer("❌ لا يوجد محتوى لعرضه.")
@@ -277,7 +273,6 @@ async def send_long_message(msg: types.Message, text: str, parse_mode=None):
     for i in range(0, len(text), 4000):
         await msg.answer(text[i:i+4000], parse_mode=parse_mode)
 
-# --- نظام الاتصال القوي مع موزع الأحمال والحماية ---
 async def ai_request_with_retry(prompt: str, retries=8, status_msg: types.Message = None) -> str:
     if not API_KEYS: return "لم يتم ضبط مفاتيح OpenRouter."
     
@@ -286,12 +281,11 @@ async def ai_request_with_retry(prompt: str, retries=8, status_msg: types.Messag
         key = key_manager.get_available_key()
         
         if not key:
-            logging.warning(f"جميع المفاتيح محظورة! ننتظر {delay} ثانية.")
             if status_msg:
                 try:
                     await status_msg.edit_text(
-                        f"⏳ **جميع المفاتيح استنفدت الحصة المجانية المؤقتة.**\n"
-                        f"🚫 البوت ينتظر `{int(delay)}` ثانية ثم سيكمل الملف تلقائياً..."
+                        f"⏳ **الذكاء الاصطناعي في وضع السكون المؤقت...**\n"
+                        f"🚫 القيود المجانية نشطة. ننتظر `{int(delay)}` ثانية ثم نكمل الشرح الهندسي..."
                     )
                 except: pass
             await asyncio.sleep(delay)
@@ -310,7 +304,7 @@ async def ai_request_with_retry(prompt: str, retries=8, status_msg: types.Messag
             return response.choices[0].message.content or ""
         except Exception as e:
             if "429" in str(e) or "Too Many" in str(e) or "timeout" in str(e).lower():
-                key_manager.set_cooldown(key, 20.0)
+                key_manager.set_cooldown(key, 25.0)
             else:
                 key_manager.set_cooldown(key, 5.0)
             continue
@@ -330,15 +324,10 @@ async def translate_engineering_page(text: str, status_msg: types.Message) -> st
         f"النص الهندسي:\n{text}"
     )
     res = await ai_request_with_retry(prompt, status_msg=status_msg)
+    
     cursor.execute("UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = 'translation_count'")
     db_conn.commit()
     return res
-
-async def translate_single_text(text: str, status_msg: types.Message = None) -> str:
-    if not text.strip() or len(text) < 2: return text
-    prompt = f"ترجم النص التالي إلى العربية بدقة أكاديمية: '{text}'\nاكتب الترجمة فقط بدون أي إضافات."
-    res = await ai_request_with_retry(prompt, retries=3, status_msg=status_msg)
-    return clean_math_text(res) if res else text
 
 def split_text_to_fit(text, max_length=85):
     words = text.split()
@@ -372,9 +361,10 @@ def add_academic_cover(doc: fitz.Document, filename: str):
         try:
             t_len = fitz.get_text_length(bidi_text, fontname="arab", fontsize=size)
             page.insert_text(fitz.Point((595 - t_len) / 2, y), bidi_text, fontname="arab", fontsize=size, color=(0.08, 0.2, 0.45))
-        except: pass
+        except:
+            pass
 
-# --- المعالجة الهندسية الذكية للـ PDF (الصفحات المزدوجة لحماية القوانين والجداول) ---
+# --- المعالجة الهندسية الذكية (Dual-Page Interleaved Layout) ---
 async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page: int, status_msg: types.Message) -> io.BytesIO:
     src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     out_doc = fitz.open()
@@ -399,8 +389,6 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     f"⏱ الوقت: `{elapsed}s`\n"
                     f"🛡️ يتم حفظ الصفحة الأصلية وإنشاء صفحة الشرح العربي المرافقة..."
                 )
-        except TelegramRetryAfter as e:
-            await asyncio.sleep(e.retry_after)
         except: pass
 
         # 1. إدراج الصفحة الأصلية الإنجليزية كما هي تماماً (للحفاظ على المعادلات، الجداول، والصور 100%)
@@ -414,7 +402,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
             arabic_translation = await translate_engineering_page(page_text, status_msg)
             
             if arabic_translation:
-                await asyncio.sleep(2.0) # راحة للـ API
+                await asyncio.sleep(2.0) # راحة للسيرفر
                 
                 # 4. إنشاء صفحة جديدة مخصصة للشرح والترجمة
                 trans_page = out_doc.new_page(width=595, height=842)
@@ -422,19 +410,21 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                 
                 # ترويسة صفحة الشرح
                 trans_page.draw_rect(fitz.Rect(30, 25, 565, 55), color=(0.1, 0.2, 0.5), fill=(0.9, 0.95, 1.0))
-                header_text = format_arabic("ترجمة وشرح الصفحة السابقة")
-                trans_page.insert_text(fitz.Point(380, 45), header_text, fontname="arab", fontsize=14, color=(0.1, 0.2, 0.5))
+                header_text = format_arabic(f"ترجمة وشرح الصفحة السابقة (رقم {idx})")
+                try: trans_page.insert_text(fitz.Point(360, 45), header_text, fontname="arab", fontsize=14, color=(0.1, 0.2, 0.5))
+                except: pass
                 
                 y_cursor = 80
                 lines = arabic_translation.split("\n")
                 
+                # طباعة الترجمة بشكل فقرات ونقاط مرتبة
                 for line in lines:
                     line = line.strip()
                     if not line: 
                         y_cursor += 5
                         continue
                         
-                    # معالجة الجداول المترجمة
+                    # معالجة الجداول المترجمة (Markdown Tables)
                     if "|" in line and "---" not in line:
                         cells = [c.strip() for c in line.split("|") if c.strip()]
                         if cells:
@@ -469,7 +459,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                         try:
                             bidi_line = format_arabic(a_l)
                             line_len = fitz.get_text_length(bidi_line, fontname="arab", fontsize=10.0)
-                            x_target = max(40, 550 - line_len) 
+                            x_target = max(40, 550 - line_len) # محاذاة لليمين طبيعية
                             trans_page.insert_text(fitz.Point(x_target, y_cursor), bidi_line, fontname="arab", fontsize=10.0, color=color)
                         except: pass
                         y_cursor += 16
@@ -684,8 +674,7 @@ def generate_full_academic_report(metadata: dict, report_content: str) -> io.Byt
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
     await state.clear()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", 
-                   (message.from_user.id, message.from_user.username or ""))
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (message.from_user.id, message.from_user.username or ""))
     db_conn.commit()
     
     if not is_bot_active() and not is_admin(message.from_user.id):
@@ -700,8 +689,10 @@ async def handle_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_quick_trans")
 async def cb_quick_trans(callback: types.CallbackQuery):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
-    await callback.message.answer("📄 **يرجى إرسال ملف المحاضرة (PDF) الآن** للبدء بالترجمة الأكاديمية بنظام الصفحات المزدوجة.")
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("الصيانة جارية.")
+        return
+    await callback.message.answer("📄 **يرجى إرسال ملف المحاضرة (PDF) الآن** للبدء بالترجمة الهندسية الدقيقة.")
     await callback.answer()
 
 @dp.callback_query(F.data == "cmd_about")
@@ -806,7 +797,9 @@ async def process_broadcast(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_search_menu")
 async def cb_search_menu(callback: types.CallbackQuery, state: FSMContext):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("عذراً، البوت في وضع الصيانة.")
+        return
     await callback.message.edit_text("🔍 **اختر لغة البحث في الأرشيف الأكاديمي:**", reply_markup=get_search_lang_menu())
     await callback.answer()
 
@@ -858,7 +851,9 @@ async def process_search_with_limit(callback: types.CallbackQuery, state: FSMCon
 
 @dp.callback_query(F.data == "cmd_lab")
 async def cb_lab_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("الصيانة جارية.")
+        return
     await callback.message.edit_text("📝 **صياغة تقرير بحثي مختبري أكاديمي رسمي:**\n\nيرجى إرسال **اسم الطالب الثلاثي**:")
     await state.set_state(AppStates.waiting_for_lab_student_name)
     await callback.answer()
@@ -896,7 +891,7 @@ async def process_lab_input(message: types.Message, state: FSMContext):
     status_msg = await message.answer("✍️ **جاري صياغة التقرير (البحث) الهندسي الشامل وتنظيم الجداول...**")
     
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة بحث أكاديمي مفصل متعدد الصفحات", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري صياغة بحث أكاديمي مفصل", stop_event))
     
     prompt = (
         f"قم بصياغة تقرير بحثي مختبري جامعي رسمي مفصل جداً باللغة الإنجليزية للتجربة التالية: {raw_data}.\n"
@@ -937,7 +932,7 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
     
     status_msg = await callback.message.answer("⏳ **جاري تنسيق وإنشاء الملف النهائي مع الغلاف والجداول الأكاديمية...**")
     stop_event = asyncio.Event()
-    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات البحث المتعددة بأمان", stop_event))
+    counter_task = asyncio.create_task(run_live_counter(status_msg, "جاري بناء صفحات البحث بأمان", stop_event))
     
     if fmt == "fmt_pdf":
         pdf_io = generate_full_academic_report(metadata, content)
@@ -979,7 +974,9 @@ async def export_lab_report(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_convert")
 async def cb_convert_prompt(callback: types.CallbackQuery):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("الصيانة جارية.")
+        return
     await callback.message.edit_text(
         "🔄 **تحويل العروض التقديمية (PowerPoint) إلى PDF بالكامل:**\n\n"
         "أرسل الآن ملف PowerPoint (.pptx) في المحادثة وسيقوم البوت بتحويل كافة النصوص والمسائل والجداول العميقة إلى مستند PDF منسق.",
@@ -1100,10 +1097,54 @@ async def process_pdf_action(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.answer("❌ تعذر استخراج النصوص.")
         finally:
             await state.clear()
+    await callback.answer()
+
+@dp.message(AppStates.waiting_for_range)
+async def run_translation(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    file_id = data.get("file_id")
+    file_name = data.get("file_name")
+    user_text = message.text.strip()
+    
+    start_p, end_p = 0, 9999
+    if user_text != "الكل":
+        try:
+            parts = user_text.split("-")
+            start_p = int(parts[0]) - 1
+            end_p = int(parts[1]) - 1
+        except Exception:
+            await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
+            return
+
+    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بالترجمة الهندسية...**\n🛡️ تفعيل نظام (الصفحات المزدوجة) لحماية القوانين والجداول 100%.")
+    try:
+        file = await bot.get_file(file_id)
+        pdf_io = io.BytesIO()
+        await bot.download_file(file.file_path, destination=pdf_io)
+        pdf_bytes = pdf_io.getvalue()
+
+        processed_pdf = await process_pdf(pdf_bytes, file_name, start_p, end_p, status_msg)
+
+        out_name = f"مترجم_هندسي_{file_name}"
+        to_send = BufferedInputFile(processed_pdf.getvalue(), filename=out_name)
+
+        await status_msg.delete()
+        await message.answer_document(
+            document=to_send, 
+            caption="✅ تمت الترجمة الهندسية بنجاح!\n\n💡 **طريقة العرض الجديدة:** تم الاحتفاظ بالصفحة الإنجليزية الأصلية (بكل قوانينها وصورها وجداولها)، وإضافة صفحة شرح وترجمة باللغة العربية تليها مباشرة لتسهيل المذاكرة دون تشويه الملف.",
+            reply_markup=get_main_menu(message.from_user.id)
+        )
+    except Exception as e:
+        logging.error(f"خطأ الترجمة: {e}")
+        await message.answer(f"❌ حدث خطأ أثناء المعالجة: {e}")
+    finally:
+        await state.clear()
 
 @dp.callback_query(F.data == "cmd_dict")
 async def cb_dict(callback: types.CallbackQuery, state: FSMContext):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("الصيانة جارية.")
+        return
     await callback.message.edit_text("📖 **قاموس هندسة النفط:**\n\nأرسل الآن المصطلح الهندسي للبحث عن تعريفه واستخداماته:")
     await state.set_state(AppStates.waiting_for_dict_term)
     await callback.answer()
@@ -1127,7 +1168,9 @@ async def process_dict(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_formula")
 async def cb_formula(callback: types.CallbackQuery, state: FSMContext):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("الصيانة جارية.")
+        return
     await callback.message.edit_text("📐 **مفسر المعادلات والرموز:**\n\nأرسل المعادلة الرياضية أو القانون لشرح دلالة الرموز وتطبيقاتها:")
     await state.set_state(AppStates.waiting_for_formula)
     await callback.answer()
@@ -1151,7 +1194,9 @@ async def process_formula(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "cmd_calc")
 async def cb_calc(callback: types.CallbackQuery, state: FSMContext):
-    if not is_bot_active() and not is_admin(callback.from_user.id): return
+    if not is_bot_active() and not is_admin(callback.from_user.id): 
+        await callback.answer("الصيانة جارية.")
+        return
     await callback.message.edit_text("🧮 **حاسبة ومحول وحدات النفط:**\n\nأرسل مسألتك أو التحويل المطلوب لحسابها خطوة بخطوة بالوحدات الهندسية:")
     await state.set_state(AppStates.waiting_for_calc_input)
     await callback.answer()
@@ -1210,11 +1255,17 @@ async def cmd_set_schedule(message: types.Message):
     db_conn.commit()
     await message.answer("✅ تم تحديث الجدول الدراسي بنجاح.")
 
-# ==========================================
-# خادم الويب ومنع نوم السيرفر (Self Ping)
-# ==========================================
+# --- المعالج الشامل للردود العشوائية لحماية استرداد الجلسة ---
+@dp.message(F.text)
+async def catch_all_text(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        text = message.text.strip()
+        if text == "الكل" or re.match(r'^\d+-\d+$', text):
+            await message.answer("⚠️ عذراً، تم تحديث النظام أو إعادة تشغيل السيرفر وفقدان الجلسة.\n\nيرجى إرسال ملف المحاضرة (PDF) من جديد لترجمته.")
+
 async def handle_ping(request):
-    return web.Response(text="Academic Bot Platform is Live and Awake!")
+    return web.Response(text="Engineering Bot is Live!")
 
 async def keep_awake_loop():
     port = int(os.environ.get("PORT", 8080))
@@ -1223,10 +1274,8 @@ async def keep_awake_loop():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    pass
-        except Exception:
-            pass
+                async with session.get(url, timeout=10) as resp: pass
+        except: pass
         await asyncio.sleep(480)
 
 async def start_web_server():
@@ -1242,7 +1291,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 المنصة الأكاديمية تعمل مع نظام الحماية والاسترجاع الكامل للخدمات...")
+    logging.info("🚀 المنصة الهندسية الشاملة تعمل بنظام الصفحات المزدوجة واسترداد الجلسة...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
