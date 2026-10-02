@@ -31,6 +31,7 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO)
 
+# --- الإعدادات الثابتة ---
 TELEGRAM_BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_ID_ENV = os.environ.get("ADMIN_ID", "832023205") 
 ADMIN_USER_IDS = [int(x.strip()) for x in ADMIN_ID_ENV.split(",") if x.strip().isdigit()]
@@ -62,6 +63,7 @@ def ensure_font_downloaded():
 
 ensure_font_downloaded()
 
+# --- نظام الحجر الصحي الذكي للمفاتيح ---
 class KeyManager:
     def __init__(self, api_keys):
         self.api_keys = api_keys
@@ -206,7 +208,13 @@ def get_report_formats():
 def clean_math_text(text: str) -> str:
     if not text: return ""
     replacements = [
-        (r'\\[a-zA-Z]+', ''), (r'\$', ''), (r'\\', '')
+        (r'\\frac\{([^}]+)\}\{([^}]+)\}', r'(\1 / \2)'),
+        (r'\\In\b', 'ln'), (r'\\ln\b', 'ln'), (r'\\log_\{10\}', 'log10'),
+        (r'\\tag\{[^}]+\}', ''), (r'\\Delta\b', 'Δ'), (r'\\mu\b', 'μ'),
+        (r'\\rho\b', 'ρ'), (r'\\phi\b', 'φ'), (r'\\pi\b', 'π'),
+        (r'\\approx\b', '≈'), (r'\\times\b', '×'), (r'\\pm\b', '±'),
+        (r'\\circ', '°'), (r'\^\{([^}]+)\}', r'^\1'), (r'_\{([^}]+)\}', r'_\1'),
+        (r'\\[(\[\]\)]', ''), (r'\$', ''), (r'\\text\{([^}]+)\}', r'\1')
     ]
     cleaned = text
     for pattern, repl in replacements:
@@ -215,14 +223,49 @@ def clean_math_text(text: str) -> str:
 
 def format_arabic(text: str) -> str:
     if not text: return ""
-    reshaped = arabic_reshaper.reshape(text)
+    reshaped = arabic_reshaper.reshape(clean_math_text(text))
     return get_display(reshaped)
+
+def get_font_length(text: str, fontsize: float) -> float:
+    try:
+        font = fitz.Font(fontfile=FONT_PATH)
+        return font.text_length(text, fontsize=fontsize)
+    except Exception:
+        return fitz.get_text_length(text, fontname="helv", fontsize=fontsize)
 
 def prepare_page_font(page: fitz.Page):
     if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 50000:
         try:
             page.insert_font(fontname="arab", fontfile=FONT_PATH)
         except: pass
+
+async def run_live_counter(status_msg: types.Message, task_title: str, stop_event: asyncio.Event):
+    start_time = time.time()
+    frames = ["⏳", "⌛"]
+    step = 0
+    while not stop_event.is_set():
+        try:
+            await asyncio.sleep(5.0) 
+            if stop_event.is_set(): break
+            elapsed = int(time.time() - start_time)
+            frame = frames[step % len(frames)]
+            bars = ["▒▒▒▒▒▒▒▒▒▒", "███▒▒▒▒▒▒▒", "██████▒▒▒▒", "█████████▒", "██████████"]
+            bar_frame = bars[step % len(bars)]
+            step += 1
+            await status_msg.edit_text(
+                f"{frame} **{task_title}**\n\n"
+                f"⏱ الوقت المستغرق: `{elapsed} ثانية`\n"
+                f"🔄 المعالجة الأكاديمية: `[{bar_frame}]`\n\n"
+                f"💡 يرجى الانتظار، جاري العمل بصبر وأمان..."
+            )
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+        except TelegramBadRequest:
+            pass
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            pass
 
 async def send_long_message(msg: types.Message, text: str, parse_mode=None):
     if not text:
@@ -276,7 +319,7 @@ async def translate_table_cells(cells_texts: list, status_msg: types.Message) ->
         prompt += f"{i}|| {txt}\n"
         
     content = await ai_request_with_retry(prompt, status_msg=status_msg)
-    results = [txt for txt in cells_texts] # الافتراضي هو النص الأصلي
+    results = [txt for txt in cells_texts]
     
     if content:
         for line in content.split('\n'):
@@ -291,32 +334,47 @@ async def translate_table_cells(cells_texts: list, status_msg: types.Message) ->
     return results
 
 async def translate_engineering_blocks(text_blocks: list, status_msg: types.Message) -> list:
-    """دالة لترجمة الفقرات النصية دفعة واحدة وتنسيقها كنقاط"""
+    """دالة لترجمة الفقرات النصية بنظام الدفعات (Batches) لتفادي الحظر والصفحات الفارغة"""
     if not text_blocks: return []
-    prompt = (
-        "أنت بروفيسور هندسة. ترجم الفقرات التالية للعربية بدقة.\n"
-        "قواعد صارمة:\n"
-        "1. حافظ على المعادلات والرموز الرياضية بالإنجليزية.\n"
-        "2. بسّط الشرح واجعله واضحاً للطلاب.\n"
-        "3. التزم بالترقيم (رقم|| النص המترجم).\n\n"
-    )
-    for i, text in enumerate(text_blocks):
-        prompt += f"{i}|| {text}\n"
-        
-    content = await ai_request_with_retry(prompt, status_msg=status_msg)
-    results = ["" for _ in range(len(text_blocks))]
     
-    if content:
-        for line in content.split('\n'):
-            if '||' in line:
-                parts = line.split('||', 1)
-                num_str = parts[0].strip()
-                if num_str.isdigit() and 0 <= int(num_str) < len(text_blocks):
-                    results[int(num_str)] = clean_math_text(parts[1].strip())
-                    
-        cursor.execute("UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = 'translation_count'")
-        db_conn.commit()
+    results = ["" for _ in range(len(text_blocks))]
+    batch_size = 3 # نرسل 3 فقرات فقط في كل طلب لتخفيف الضغط
+    
+    for i in range(0, len(text_blocks), batch_size):
+        batch = text_blocks[i:i+batch_size]
+        prompt = (
+            "أنت بروفيسور هندسة. ترجم الفقرات التالية للعربية بدقة.\n"
+            "قواعد صارمة:\n"
+            "1. حافظ على المعادلات والرموز الرياضية بالإنجليزية.\n"
+            "2. بسّط الشرح واجعله واضحاً.\n"
+            "3. التزم بالترقيم (رقم|| النص المترجم).\n\n"
+        )
+        for j, text in enumerate(batch):
+            prompt += f"{i+j}|| {text}\n"
+            
+        content = await ai_request_with_retry(prompt, status_msg=status_msg)
+        
+        if content:
+            for line in content.split('\n'):
+                if '||' in line:
+                    parts = line.split('||', 1)
+                    num_str = parts[0].strip()
+                    if num_str.isdigit():
+                        idx = int(num_str)
+                        if 0 <= idx < len(text_blocks):
+                            results[idx] = clean_math_text(parts[1].strip())
+                            
+        await asyncio.sleep(2.0) # استراحة قصيرة بين كل دفعة نصوص
+        
+    cursor.execute("UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = 'translation_count'")
+    db_conn.commit()
     return results
+
+async def translate_single_text(text: str, status_msg: types.Message = None) -> str:
+    if not text.strip() or len(text) < 2: return text
+    prompt = f"ترجم النص التالي إلى العربية بدقة أكاديمية: '{text}'\nاكتب الترجمة فقط بدون أي إضافات."
+    res = await ai_request_with_retry(prompt, retries=3, status_msg=status_msg)
+    return clean_math_text(res) if res else text
 
 def split_text_to_fit(text, max_length=85):
     words = text.split()
@@ -376,7 +434,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                     f"[{bar}] {percent}%\n"
                     f"📄 الصفحة: `{idx}` من `{total_pages}`\n"
                     f"⏱ الوقت: `{elapsed}s`\n"
-                    f"🛡️ يتم فصل الجداول عن النصوص لضمان دقة الترجمة..."
+                    f"🛡️ يتم فصل الجداول عن النصوص وضغطها لتجنب فقدان أي نص..."
                 )
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
@@ -466,7 +524,7 @@ async def process_pdf(pdf_bytes: bytes, filename: str, start_page: int, end_page
                         y_cursor += 24
                     y_cursor += 15
 
-            # 5. معالجة وطباعة النصوص العادية المترجمة كفقرات
+            # 5. معالجة وطباعة النصوص العادية المترجمة كفقرات مرتبة
             if text_blocks:
                 translated_blocks = await translate_engineering_blocks(text_blocks, status_msg)
                 
@@ -721,7 +779,7 @@ async def cb_quick_trans(callback: types.CallbackQuery):
     if not is_bot_active() and not is_admin(callback.from_user.id): 
         await callback.answer("الصيانة جارية.")
         return
-    await callback.message.answer("📄 **يرجى إرسال ملف المحاضرة (PDF) الآن** للبدء بالترجمة الهندسية الدقيقة.")
+    await callback.message.answer("📄 **يرجى إرسال ملف المحاضرة (PDF) الآن** للبدء بالترجمة الأكاديمية الدقيقة.")
     await callback.answer()
 
 @dp.callback_query(F.data == "cmd_about")
@@ -1145,7 +1203,7 @@ async def run_translation(message: types.Message, state: FSMContext):
             await message.answer("❌ يرجى كتابة النطاق بشكل صحيح مثل 1-5 أو كلمة 'الكل'.")
             return
 
-    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بالترجمة الهندسية...**\n🛡️ تفعيل نظام (الصفحات المزدوجة الذكي) لحماية القوانين والجداول 100%.")
+    status_msg = await message.answer("📥 **جاري تنزيل الملف والبدء بالترجمة الهندسية...**\n🛡️ تفعيل نظام (الصفحات المزدوجة الذكي) لحماية القوانين والجداول، وتفعيل الدفعات لضمان عدم ضياع النصوص.")
     try:
         file = await bot.get_file(file_id)
         pdf_io = io.BytesIO()
@@ -1160,7 +1218,7 @@ async def run_translation(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer_document(
             document=to_send, 
-            caption="✅ تمت الترجمة الهندسية بنجاح!\n\n💡 **النتيجة:** تم الاحتفاظ بالصفحات الإنجليزية، وتصميم صفحة شرح عربية منظمة ومستقلة تليها مباشرة، مع استخراج وترجمة الجداول بدقة.",
+            caption="✅ تمت الترجمة الهندسية بنجاح!\n\n💡 **النتيجة:** تم الاحتفاظ بالصفحات الإنجليزية، وتصميم صفحة شرح عربية منظمة ومستقلة تليها مباشرة، مع استخراج وترجمة الجداول والنصوص كاملة بدون فراغات.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
