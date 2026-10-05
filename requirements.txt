@@ -1,8 +1,6 @@
 aiogram>=3.0.0
 openai
 PyMuPDF
-arabic-reshaper
-python-bidi
 aiohttp
 python-pptx
 python-docx
