@@ -1480,7 +1480,7 @@ async def cb_convert_prompt(callback: types.CallbackQuery):
 # ============================================================
 @dp.message(F.document)
 async def handle_incoming_documents(message: types.Message, state: FSMContext):
-        if not is_bot_active() and not is_admin(message.from_user.id):
+    if not is_bot_active() and not is_admin(message.from_user.id):
         return
     doc_name = message.document.file_name.lower()
     file_id = message.document.file_id
