@@ -55,10 +55,12 @@ if not ADMIN_USER_IDS:
 
 # --- Groq (المزود الأساسي - الأسرع والأفضل) ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+
+# ✅ النماذج النشطة والمتاحة حالياً (بديلة للنماذج المحذوفة)
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "gemma2-9b-it",
+    "openai/gpt-oss-120b",     # 🥇 الأفضل للترجمة الأكاديمية الدقيقة (بديل llama-3.3-70b)
+    "openai/gpt-oss-20b",      # 🥈 أسرع وأخف (بديل llama-3.1-8b)
+    "qwen/qwen3.6-27b",        # 🥉 خيار قوي جداً ومناسب للعربية
 ]
 
 # --- OpenRouter (احتياطي) ---
