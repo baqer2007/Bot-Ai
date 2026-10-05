@@ -1480,4 +1480,454 @@ async def cb_convert_prompt(callback: types.CallbackQuery):
 # ============================================================
 @dp.message(F.document)
 async def handle_incoming_documents(message: types.Message, state: FSMContext):
-    if not is_bot_active() and not is_admin(message.from_user.id
+        if not is_bot_active() and not is_admin(message.from_user.id):
+        return
+    doc_name = message.document.file_name.lower()
+    file_id = message.document.file_id
+
+    if doc_name.endswith(".pptx") or doc_name.endswith(".ppt"):
+        status_msg = await message.answer("📊 **جاري تحويل PowerPoint...**")
+        stop_event = asyncio.Event()
+        counter_task = asyncio.create_task(
+            run_live_counter(status_msg, "تحويل المحتوى", stop_event)
+        )
+        try:
+            file = await bot.get_file(file_id)
+            io_file = io.BytesIO()
+            await bot.download_file(file.file_path, destination=io_file)
+
+            if Presentation and doc_name.endswith(".pptx"):
+                pdf_io = convert_pptx_to_formatted_pdf(io_file, message.document.file_name)
+                out_file = BufferedInputFile(
+                    pdf_io.getvalue(),
+                    filename=f"Converted_{message.document.file_name}.pdf"
+                )
+                stop_event.set()
+                counter_task.cancel()
+                await status_msg.delete()
+                await message.answer_document(
+                    out_file,
+                    caption="✅ تم التحويل بنجاح!",
+                    reply_markup=get_main_menu(message.from_user.id)
+                )
+            else:
+                stop_event.set()
+                counter_task.cancel()
+                await status_msg.delete()
+                await message.answer("⚠️ يرجى إرسال ملف PPTX.")
+        except Exception as e:
+            stop_event.set()
+            counter_task.cancel()
+            logging.error(f"PPTX error: {e}")
+            await message.answer(f"❌ فشل التحويل: {e}")
+        return
+
+    if doc_name.endswith(".pdf"):
+        await state.update_data(file_id=file_id, file_name=message.document.file_name)
+        await message.answer("📥 **تم استلام PDF.** حدد الإجراء:",
+                            reply_markup=get_pdf_actions())
+        await state.set_state(AppStates.waiting_for_action)
+        return
+
+    await message.answer("📁 يدعم البوت PDF و PowerPoint.",
+                        reply_markup=get_main_menu(message.from_user.id))
+
+
+# ============================================================
+# إجراءات PDF
+# ============================================================
+@dp.callback_query(AppStates.waiting_for_action)
+async def process_pdf_action(callback: types.CallbackQuery, state: FSMContext):
+    action = callback.data
+    data = await state.get_data()
+    file_id = data.get("file_id")
+    file_name = data.get("file_name")
+
+    if action == "action_archive":
+        cursor.execute(
+            "INSERT INTO files (file_name, file_id, keyword) VALUES (?, ?, ?)",
+            (file_name, file_id, file_name.lower())
+        )
+        db_conn.commit()
+        await callback.message.edit_text("✅ تم أرشفة الملف.")
+        await state.clear()
+
+    elif action == "action_translate":
+        await callback.message.edit_text(
+            "📄 هل تريد ترجمة الملف كاملاً أم صفحات معينة؟\n\n"
+            "- أرسل `الكل` للترجمة الكاملة.\n"
+            "- أو حدد الصفحات (مثال: `1-5`)"
+        )
+        await state.set_state(AppStates.waiting_for_range)
+
+    elif action == "action_summarize":
+        status_msg = await callback.message.answer("⏳ **جاري التلخيص...**")
+        stop_event = asyncio.Event()
+        counter_task = asyncio.create_task(
+            run_live_counter(status_msg, "تحليل المحتوى", stop_event)
+        )
+        try:
+            file = await bot.get_file(file_id)
+            pdf_io = io.BytesIO()
+            await bot.download_file(file.file_path, destination=pdf_io)
+            doc = fitz.open(stream=pdf_io.getvalue(), filetype="pdf")
+
+            text_acc = "".join([
+                f"\n{doc[i].get_text()}" for i in range(min(6, len(doc)))
+            ])
+            prompt = (
+                f"لخص هذه المحاضرة في هندسة النفط بالعربية مع إبراز: "
+                f"القوانين والمعادلات، التعاريف الهامة، والأسئلة الامتحانية المتوقعة:\n\n"
+                f"{text_acc[:3500]}"
+            )
+            summary = await ai_request_with_retry(prompt, status_msg=status_msg)
+
+            stop_event.set()
+            counter_task.cancel()
+            await status_msg.delete()
+            if summary:
+                await send_long_message(
+                    callback.message,
+                    f"📑 **الملخص الأكاديمي ({file_name}):**\n\n{clean_math_text(summary)}"
+                )
+            else:
+                await callback.message.answer("❌ تعذر التلخيص.")
+        except Exception as e:
+            stop_event.set()
+            counter_task.cancel()
+            logging.error(f"Summarize error: {e}")
+            await callback.message.answer("❌ فشل التلخيص.")
+        finally:
+            await state.clear()
+
+    elif action == "action_extract":
+        status_msg = await callback.message.answer("⏳ **جاري الاستخراج...**")
+        stop_event = asyncio.Event()
+        counter_task = asyncio.create_task(
+            run_live_counter(status_msg, "استخراج النصوص", stop_event)
+        )
+        try:
+            file = await bot.get_file(file_id)
+            pdf_io = io.BytesIO()
+            await bot.download_file(file.file_path, destination=pdf_io)
+            doc = fitz.open(stream=pdf_io.getvalue(), filetype="pdf")
+
+            extracted = "".join([
+                f"\n--- صفحة {i+1} ---\n{clean_math_text(doc[i].get_text())}"
+                for i in range(min(8, len(doc)))
+            ])
+            txt_file = BufferedInputFile(
+                extracted.encode("utf-8"),
+                filename=f"Text_{file_name}.txt"
+            )
+            stop_event.set()
+            counter_task.cancel()
+            await status_msg.delete()
+            await callback.message.answer_document(txt_file,
+                                                  caption="📄 تم استخراج النصوص.")
+        except Exception as e:
+            stop_event.set()
+            counter_task.cancel()
+            logging.error(f"Extract error: {e}")
+            await callback.message.answer("❌ فشل الاستخراج.")
+        finally:
+            await state.clear()
+
+    await callback.answer()
+
+
+# ============================================================
+# الترجمة الهندسية
+# ============================================================
+@dp.message(AppStates.waiting_for_range)
+async def run_translation(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    file_id = data.get("file_id")
+    file_name = data.get("file_name")
+    user_text = message.text.strip()
+
+    start_p, end_p = 0, 9999
+    if user_text != "الكل":
+        try:
+            parts = user_text.split("-")
+            start_p = int(parts[0]) - 1
+            end_p = int(parts[1]) - 1
+        except Exception:
+            await message.answer("❌ اكتب النطاق بشكل صحيح مثل `1-5` أو `الكل`.")
+            return
+
+    status_msg = await message.answer(
+        "📥 **جاري تنزيل الملف وبدء الترجمة...**\n"
+        "🛡️ نظام الصفحات المزدوجة + حماية المعادلات"
+    )
+    try:
+        file = await bot.get_file(file_id)
+        pdf_io = io.BytesIO()
+        await bot.download_file(file.file_path, destination=pdf_io)
+        pdf_bytes = pdf_io.getvalue()
+
+        processed_pdf = await process_pdf(pdf_bytes, file_name, start_p, end_p, status_msg)
+
+        out_name = f"مترجم_هندسي_{file_name}"
+        to_send = BufferedInputFile(processed_pdf.getvalue(), filename=out_name)
+
+        await status_msg.delete()
+        await message.answer_document(
+            document=to_send,
+            caption=(
+                "✅ **تمت الترجمة الهندسية بنجاح!**\n\n"
+                "💡 تم الاحتفاظ بالصفحات الإنجليزية، وإضافة شرح عربي منظم بجانبها، "
+                "مع ترجمة الجداول والمعادلات بشكل دقيق."
+            ),
+            reply_markup=get_main_menu(message.from_user.id)
+        )
+    except Exception as e:
+        logging.error(f"Translation error: {e}")
+        await message.answer(f"❌ خطأ: {e}")
+    finally:
+        await state.clear()
+
+
+# ============================================================
+# القاموس
+# ============================================================
+@dp.callback_query(F.data == "cmd_dict")
+async def cb_dict(callback: types.CallbackQuery, state: FSMContext):
+    if not is_bot_active() and not is_admin(callback.from_user.id):
+        await callback.answer("الصيانة.")
+        return
+    await callback.message.edit_text("📖 **أرسل المصطلح:**")
+    await state.set_state(AppStates.waiting_for_dict_term)
+    await callback.answer()
+
+@dp.message(AppStates.waiting_for_dict_term)
+async def process_dict(message: types.Message, state: FSMContext):
+    term = message.text.strip()
+    status_msg = await message.answer("🔍 **جاري البحث...**")
+    stop_event = asyncio.Event()
+    counter_task = asyncio.create_task(
+        run_live_counter(status_msg, f"البحث عن '{term}'", stop_event)
+    )
+
+    prompt = (
+        f"اشرح المصطلح الهندسي النفطي '{term}' شرحاً دقيقاً لطلاب هندسة النفط، "
+        f"مع أهميته الميدانية والمصطلحات المرتبطة."
+    )
+    res = await ai_request_with_retry(prompt, status_msg=status_msg)
+
+    stop_event.set()
+    counter_task.cancel()
+    await status_msg.delete()
+    if res:
+        await send_long_message(
+            message,
+            f"📘 **المصطلح:** `{term}`\n\n{clean_math_text(res)}"
+        )
+    else:
+        await message.answer("❌ تعذر جلب الشرح.")
+    await message.answer("القائمة:", reply_markup=get_main_menu(message.from_user.id))
+    await state.clear()
+
+
+# ============================================================
+# مفسر المعادلات
+# ============================================================
+@dp.callback_query(F.data == "cmd_formula")
+async def cb_formula(callback: types.CallbackQuery, state: FSMContext):
+    if not is_bot_active() and not is_admin(callback.from_user.id):
+        await callback.answer("الصيانة.")
+        return
+    await callback.message.edit_text("📐 **أرسل المعادلة:**")
+    await state.set_state(AppStates.waiting_for_formula)
+    await callback.answer()
+
+@dp.message(AppStates.waiting_for_formula)
+async def process_formula(message: types.Message, state: FSMContext):
+    form = message.text.strip()
+    status_msg = await message.answer("🔍 **جاري التحليل...**")
+    stop_event = asyncio.Event()
+    counter_task = asyncio.create_task(
+        run_live_counter(status_msg, "تحليل المعادلة", stop_event)
+    )
+
+    prompt = (
+        f"اشرح المعادلة والرموز الرياضية التالية بالتفصيل بصيغة نصية واضحة: '{form}'. "
+        f"وضح كل رمز، والوحدات الحقلية، وتطبيقاتها في هندسة النفط."
+    )
+    res = await ai_request_with_retry(prompt, status_msg=status_msg)
+
+    stop_event.set()
+    counter_task.cancel()
+    await status_msg.delete()
+    if res:
+        await send_long_message(
+            message,
+            f"📐 **تفسير المعادلة:**\n\n{clean_math_text(res)}"
+        )
+    else:
+        await message.answer("❌ تعذر التحليل.")
+    await message.answer("القائمة:", reply_markup=get_main_menu(message.from_user.id))
+    await state.clear()
+
+
+# ============================================================
+# الحاسبة
+# ============================================================
+@dp.callback_query(F.data == "cmd_calc")
+async def cb_calc(callback: types.CallbackQuery, state: FSMContext):
+    if not is_bot_active() and not is_admin(callback.from_user.id):
+        await callback.answer("الصيانة.")
+        return
+    await callback.message.edit_text("🧮 **أرسل المسألة:**")
+    await state.set_state(AppStates.waiting_for_calc_input)
+    await callback.answer()
+
+@dp.message(AppStates.waiting_for_calc_input)
+async def process_calc(message: types.Message, state: FSMContext):
+    q = message.text.strip()
+    status_msg = await message.answer("⚙ **جاري الحساب...**")
+    stop_event = asyncio.Event()
+    counter_task = asyncio.create_task(
+        run_live_counter(status_msg, "الحساب", stop_event)
+    )
+
+    prompt = f"حل هذه المسألة الهندسية النفطية بخطوات واضحة واذكر القوانين والوحدات: {q}"
+    res = await ai_request_with_retry(prompt, status_msg=status_msg)
+
+    stop_event.set()
+    counter_task.cancel()
+    await status_msg.delete()
+    if res:
+        await send_long_message(message, f"🧮 **الحل:**\n\n{clean_math_text(res)}")
+    else:
+        await message.answer("❌ تعذر الحل.")
+    await message.answer("القائمة:", reply_markup=get_main_menu(message.from_user.id))
+    await state.clear()
+
+
+# ============================================================
+# الجدول والتبليغات
+# ============================================================
+@dp.callback_query(F.data == "cmd_schedule")
+async def cb_schedule(callback: types.CallbackQuery):
+    cursor.execute("SELECT notice FROM schedules WHERE id = 1")
+    notice = cursor.fetchone()[0]
+    await callback.message.edit_text(
+        f"📅 **الجدول والتبليغات الرسمية:**\n\n{notice}",
+        reply_markup=get_main_menu(callback.from_user.id)
+    )
+    await callback.answer()
+
+
+# ============================================================
+# الأوامر الإدارية
+# ============================================================
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    broadcast_msg = message.text.replace("/broadcast", "").strip()
+    if not broadcast_msg:
+        await message.answer("⚠️ اكتب نص الإذاعة.")
+        return
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    sent = 0
+    for (u_id,) in users:
+        try:
+            await bot.send_message(u_id, f"📢 **تبليغ رسمي:**\n\n{broadcast_msg}")
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+    await message.answer(f"✅ تم الإرسال إلى {sent} طالب.")
+
+@dp.message(Command("set_schedule"))
+async def cmd_set_schedule(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    new_schedule = message.text.replace("/set_schedule", "").strip()
+    if not new_schedule:
+        await message.answer("⚠️ اكتب محتوى الجدول.")
+        return
+    cursor.execute("UPDATE schedules SET notice = ? WHERE id = 1", (new_schedule,))
+    db_conn.commit()
+    await message.answer("✅ تم تحديث الجدول.")
+
+
+# ============================================================
+# catch_all_text
+# ============================================================
+@dp.message(F.text)
+async def catch_all_text(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        text = message.text.strip()
+        if text == "الكل" or re.match(r'^\d+-\d+$', text):
+            await message.answer(
+                "⚠️ عذراً، تم فقدان الجلسة.\n\n"
+                "يرجى إرسال ملف PDF من جديد لترجمته."
+            )
+
+
+# ============================================================
+# Web Server (Keep-Alive)
+# ============================================================
+async def handle_ping(request):
+    return web.Response(text="Engineering Bot is Live!")
+
+async def keep_awake_loop():
+    port = int(os.environ.get("PORT", 8080))
+    url = f"http://127.0.0.1:{port}/"
+    await asyncio.sleep(20)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    pass
+        except Exception:
+            pass
+        await asyncio.sleep(480)
+
+async def start_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    asyncio.create_task(keep_awake_loop())
+
+
+# ============================================================
+# Main
+# ============================================================
+async def main():
+    if not GROQ_API_KEY and not API_KEYS:
+        logging.error("❌ لا يوجد أي مزود AI مُفعّل! الرجاء إضافة GROQ_API_KEY")
+        return
+
+    if GROQ_API_KEY:
+        await fetch_available_groq_models()
+        if not GROQ_MODELS:
+            logging.warning("⚠️ لم يتم العثور على نماذج Groq")
+
+    await start_web_server()
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    providers = []
+    if GROQ_API_KEY and GROQ_MODELS:
+        providers.append(f"Groq ✅ ({len(GROQ_MODELS)})")
+    if API_KEYS:
+        providers.append(f"OpenRouter ✅ ({len(API_KEYS)})")
+    if not providers:
+        providers.append("⚠️ لا يوجد مزود!")
+
+    logging.info(f"🚀 البوت يعمل — المزودون: {', '.join(providers)}")
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
